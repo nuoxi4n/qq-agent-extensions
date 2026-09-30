@@ -1,0 +1,387 @@
+import test, { before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { pathToFileURL } from 'node:url';
+import { setup, providers } from '../../../skills/ai-image/index.js';
+import * as skill from '../../../skills/ai-image/index.js';
+import { readSettings } from '../../../skills/ai-image/lib/config.js';
+import { createImageClient, decodeBase64, checkImage, readLimited } from '../../../skills/ai-image/lib/images.js';
+
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yaz0AAAAASUVORK5CYII=', 'base64');
+const png2 = Buffer.concat([png, Buffer.from('second')]);
+const fixtureKey = 'fixture-only-not-a-real-api-key';
+const cacheFiles = new Set();
+let server, baseUrl, calls, handler;
+const jsonImage = (res, images = [png]) => {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ data: images.map((image) => ({ b64_json: image.toString('base64') })) }));
+};
+
+before(async () => {
+  server = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const call = { url: req.url, method: req.method, headers: req.headers, body: Buffer.concat(chunks) };
+    calls.push(call);
+    try { await handler(call, res); } catch (error) { res.destroy(error); }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+});
+
+after(async () => {
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+  const expected = path.join(os.tmpdir(), 'qq-agent-ai-image') + path.sep;
+  for (const file of cacheFiles) {
+    assert.ok(path.resolve(file).startsWith(expected));
+    await fs.unlink(file).catch(() => {});
+  }
+});
+
+function fixture(overrides = {}, entries = []) {
+  calls = [];
+  handler = (call, res) => {
+    if (call.method === 'POST') jsonImage(res);
+    else { res.writeHead(200, { 'Content-Type': 'image/png' }); res.end(call.url.endsWith('second') ? png2 : png); }
+  };
+  const config = { baseUrl, apiKey: fixtureKey, ...overrides };
+  const tools = {};
+  const warnings = [];
+  const sent = [];
+  setup({ config: () => config, fetch, registerTool: (tool) => { tools[tool.id] = tool; }, warn: (text) => warnings.push(text) });
+  const ctx = {
+    chatKey: 'group:123', session: { id: 'test-session', trigger: 'message', sent: [] },
+    store: {
+      findByMid(key, mid) { assert.equal(key, 'group:123'); return entries.find((entry) => String(entry.mid) === String(mid)); },
+      recent(key) { assert.equal(key, 'group:123'); return entries; }
+    },
+    sender: { async sendImage(key, image) {
+      assert.equal(key, 'group:123');
+      if (image.file) cacheFiles.add(image.file);
+      sent.push(image);
+      return { message_id: sent.length };
+    } }
+  };
+  return { tools, config, ctx, sent, warnings };
+}
+
+function remember(result) {
+  for (const image of result.images || []) if (image.filePath) cacheFiles.add(image.filePath);
+  return result;
+}
+
+test('文生图发送 JSON、Bearer 认证和 OneBot base64，缓存文件与结果一致', async () => {
+  const f = fixture();
+  const result = await f.tools.gen.execute(f.ctx, { prompt: '水彩猫', size: '1024x1024' });
+  assert.equal(result.isError, undefined);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, '/v1/images/generations');
+  assert.equal(calls[0].headers.authorization, `Bearer ${fixtureKey}`);
+  assert.deepEqual(JSON.parse(calls[0].body), { model: 'gpt-image-1', prompt: '水彩猫', n: 1, size: '1024x1024' });
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].dataUrl, `base64://${png.toString('base64')}`);
+  assert.deepEqual(await fs.readFile(f.sent[0].file), png);
+  assert.equal(f.ctx.session.sent.length, 1);
+  assert.ok(!result.content.includes(png.toString('base64')));
+});
+
+test('文生图和图生图在同一 skill 中共享实时配置', async () => {
+  const f = fixture();
+  f.config.model = 'changed-model';
+  f.config.editModel = 'edit-model';
+  let result = remember(await providers['image.generate']({ prompt: '猫' }));
+  assert.equal(result.ok, true);
+  assert.equal(result.images[0].dataUrl, `data:image/png;base64,${png.toString('base64')}`);
+  assert.equal(JSON.parse(calls[0].body).model, 'changed-model');
+  result = remember(await providers['image.edit']({ prompt: '换背景', image: { buffer: png } }));
+  assert.equal(result.ok, true);
+  assert.equal(calls[1].url, '/v1/images/edits');
+  const form = await new Response(calls[1].body, { headers: { 'Content-Type': calls[1].headers['content-type'] } }).formData();
+  assert.equal(form.get('model'), 'edit-model');
+  assert.deepEqual(Buffer.from(await form.get('image').arrayBuffer()), png);
+  assert.equal(f.sent.length, 0, '能力调用不自动发送');
+});
+
+test('图生图选择指定消息的第二张，发送真实 multipart 文件', async () => {
+  const f = fixture({}, [{ mid: 456, media: [
+    { kind: 'image', url: baseUrl + '/first' }, { kind: 'image', url: baseUrl + '/second' }
+  ] }]);
+  const result = await f.tools.edit.execute(f.ctx, { prompt: '变成水彩', messageId: '#456', imageIndex: 2 });
+  assert.equal(result.isError, undefined);
+  assert.equal(calls[0].url, '/v1/second');
+  assert.equal(calls[0].headers.authorization, undefined);
+  assert.equal(calls[1].url, '/v1/images/edits');
+  assert.match(calls[1].headers['content-type'], /^multipart\/form-data; boundary=/);
+  const form = await new Response(calls[1].body, { headers: { 'Content-Type': calls[1].headers['content-type'] } }).formData();
+  assert.equal(form.get('prompt'), '变成水彩');
+  assert.equal(form.get('n'), '1');
+  assert.equal(form.getAll('image').length, 1);
+  assert.deepEqual(Buffer.from(await form.get('image').arrayBuffer()), png2);
+});
+
+test('参考图优先使用触发消息，字符串 trigger 时回退最近带图消息', async () => {
+  const entries = [{ mid: 3, media: [{ kind: 'image', url: baseUrl + '/second' }] }];
+  const f = fixture({}, entries);
+  f.ctx.session.trigger = [{ mid: 2, media: [{ kind: 'image', url: baseUrl + '/first' }] }];
+  assert.equal((await f.tools.edit.execute(f.ctx, { prompt: '改图' })).isError, undefined);
+  assert.equal(calls[0].url, '/v1/first');
+  calls = [];
+  f.ctx.session.trigger = 'message';
+  assert.equal((await f.tools.edit.execute(f.ctx, { prompt: '改图' })).isError, undefined);
+  assert.equal(calls[0].url, '/v1/second');
+});
+
+test('未知消息、无图、越界或小数序号在生成前失败，不静默换图', async () => {
+  const f = fixture({}, [{ mid: 1, media: [{ kind: 'image', url: baseUrl + '/first' }] }, { mid: 2, media: [] }]);
+  for (const args of [{ messageId: 99 }, { messageId: 2 }, { imageIndex: 2 }, { imageIndex: 1.5 }, { imageIndex: 0 }]) {
+    assert.equal((await f.tools.edit.execute(f.ctx, { prompt: '改图', ...args })).isError, true);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test('get_image 同时返回过期 URL 和有效文件时仍能读取本地参考图', async () => {
+  const file = path.join(os.tmpdir(), 'qq-agent-ai-image-reference-test-' + process.pid + '.png');
+  await fs.writeFile(file, png);
+  try {
+    const f = fixture({}, [{ mid: 1, media: [{ kind: 'image', url: baseUrl + '/expired', file: 'qq-image-id' }] }]);
+    handler = (call, res) => { if (call.method === 'POST') jsonImage(res); else { res.writeHead(404); res.end(); } };
+    f.ctx.onebot = { async call(action, args) {
+      assert.equal(action, 'get_image');
+      assert.deepEqual(args, { file: 'qq-image-id' });
+      return { url: baseUrl + '/expired', file: pathToFileURL(file).href };
+    } };
+    assert.equal((await f.tools.edit.execute(f.ctx, { prompt: '改图' })).isError, undefined);
+    assert.equal(calls.filter((call) => call.method === 'POST').length, 1);
+  } finally { await fs.unlink(file); }
+});
+
+test('自动选图不使用本轮触发批之后的新消息，等待期开始时间不截断触发批', async () => {
+  const f = fixture({}, [
+    { id: 10, mid: 100, ts: 1000, media: [{ kind: 'image', url: baseUrl + '/first' }] },
+    { id: 12, mid: 102, ts: 1200, media: [{ kind: 'image', url: baseUrl + '/second' }] }
+  ]);
+  f.ctx.session.startedAt = 500;
+  f.ctx.session.trigger = [{ id: 11, mid: 101, ts: 1200, text: '修改上面的图片', media: [] }];
+  assert.equal((await f.tools.edit.execute(f.ctx, { prompt: '水彩风格' })).isError, undefined);
+  assert.equal(calls[0].url, '/v1/first');
+});
+
+test('技能停用会中断在途生成，即使立即重新启用也不会补发旧图片', async () => {
+  const f = fixture();
+  handler = (call, res) => {
+    skill.deactivate?.();
+    skill.activate?.();
+    jsonImage(res);
+  };
+  const result = await f.tools.gen.execute(f.ctx, { prompt: '猫' });
+  assert.equal(result.isError, true);
+  assert.equal(f.sent.length, 0);
+  assert.equal(calls.length, 1);
+});
+
+test('已结束的会话不再生成，执行中可见的中止状态阻止后续发送', async () => {
+  const f = fixture();
+  f.ctx.session.status = 'aborted';
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, true);
+  assert.equal(calls.length, 0);
+  f.ctx.session.status = 'running';
+  handler = (call, res) => { f.ctx.session.status = 'aborted'; jsonImage(res); };
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, true);
+  assert.equal(f.sent.length, 0);
+});
+
+test('参考图下载期间停用后，不回退协议端或提交生成请求', async () => {
+  const f = fixture({}, [{ mid: 1, media: [{ kind: 'image', url: baseUrl + '/reference', file: 'file-id' }] }]);
+  let lookups = 0;
+  f.ctx.onebot = { call() { lookups++; throw new Error('不应查询'); } };
+  handler = (call, res) => { skill.deactivate(); res.end(png); };
+  const result = await f.tools.edit.execute(f.ctx, { prompt: '修改背景' });
+  assert.equal(result.isError, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(lookups, 0);
+  assert.equal(f.sent.length, 0);
+});
+
+test('结果图下载期间停用后，不重试下载或发送', async () => {
+  const f = fixture();
+  handler = (call, res) => {
+    if (call.method === 'POST') res.end(JSON.stringify({ data: [{ url: baseUrl + '/result' }] }));
+    else { skill.deactivate(); res.end(png); }
+  };
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, true);
+  assert.equal(calls.length, 2);
+  assert.equal(f.sent.length, 0);
+});
+
+test('停用取消 429 退避等待，能力调用也不能继续生成', { timeout: 2000 }, async () => {
+  fixture({ maxRetries: 1 });
+  handler = (call, res) => {
+    res.writeHead(429);
+    res.end('{}');
+    setTimeout(() => skill.deactivate(), 20);
+  };
+  const result = await providers['image.generate']({ prompt: '猫' });
+  assert.equal(result.ok, false);
+  assert.equal(calls.length, 1);
+  assert.equal((await providers['image.generate']({ prompt: '另一只猫' })).ok, false);
+  assert.equal(calls.length, 1);
+});
+
+test('多图发送中观察到会话结束时保留已发结果并停止后续发送', async () => {
+  const f = fixture();
+  handler = (call, res) => jsonImage(res, [png, png2]);
+  const send = f.ctx.sender.sendImage;
+  f.ctx.sender.sendImage = async (...args) => {
+    const result = await send(...args);
+    f.ctx.session.status = 'aborted';
+    return result;
+  };
+  const result = await f.tools.gen.execute(f.ctx, { prompt: '猫', count: 2 });
+  for (const match of result.content.matchAll(/（本地缓存：([^）]+)）/g)) cacheFiles.add(match[1]);
+  assert.equal(f.sent.length, 1);
+  assert.equal(result.isError, undefined);
+  assert.match(result.content, /生成并发送 1 张/);
+  assert.match(result.content, /部分结果未完成/);
+});
+
+test('参考图不同入口均限制体积，拒绝 GIF 和伪造图片', async () => {
+  const f = fixture({ maxRefMB: 1 });
+  const large = Buffer.concat([png, Buffer.alloc(1048576)]);
+  for (const image of [{ buffer: large }, { dataUrl: large.toString('base64') }, { buffer: Buffer.from('GIF89a1234567890') }, { buffer: Buffer.from('not a picture at all') }]) {
+    assert.equal((await providers['image.edit']({ prompt: '修改', image })).ok, false);
+  }
+  assert.equal(calls.length, 0);
+  const result = remember(await providers['image.edit']({ prompt: '修改', image: { dataUrl: `data:image/png;base64,${png.toString('base64')}` } }));
+  assert.equal(result.ok, true);
+  assert.equal(f.sent.length, 0);
+});
+
+test('结果 URL 下载不携带 API Key', async () => {
+  const f = fixture();
+  handler = (call, res) => {
+    if (call.method === 'POST') res.end(JSON.stringify({ data: [{ url: baseUrl + '/image' }] }));
+    else { assert.equal(call.headers.authorization, undefined); res.end(png); }
+  };
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, undefined);
+  assert.equal(calls.length, 2);
+});
+
+test('默认不重试 429、5xx 和 408，网络断开不重试 POST', async () => {
+  for (const status of [429, 500, 502, 408]) {
+    const f = fixture({ maxRetries: status === 429 ? 0 : 3 });
+    handler = (call, res) => { res.writeHead(status); res.end(JSON.stringify({ error: { message: 'upstream timeout' } })); };
+    assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, true);
+    assert.equal(calls.length, 1);
+  }
+  const f = fixture({ maxRetries: 3 });
+  handler = (call, res) => res.destroy();
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, true);
+  assert.equal(calls.length, 1);
+});
+
+test('管理员开启后仅对 HTTP 429 做有限重试', async () => {
+  const f = fixture({ maxRetries: 1 });
+  handler = (call, res) => {
+    if (calls.length === 1) { res.writeHead(429, { 'Retry-After': '0.001' }); res.end('{}'); }
+    else jsonImage(res);
+  };
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, undefined);
+  assert.equal(calls.length, 2);
+});
+
+test('响应头先到、body 卡住也会超时，计时器释放且不重试生成', async () => {
+  fixture();
+  handler = (call, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.flushHeaders(); res.write('{'); };
+  const client = createImageClient(fetch);
+  const settings = { ...readSettings({ baseUrl, apiKey: fixtureKey, maxRetries: 3 }), timeoutMs: 40 };
+  await assert.rejects(client.request(settings, { prompt: '猫', count: 1, size: '' }), /超时.*不自动重新生成/);
+  assert.equal(calls.length, 1);
+});
+
+test('下载暂时中断只重试 GET，不再次生成', async () => {
+  const f = fixture();
+  let downloads = 0;
+  handler = (call, res) => {
+    if (call.method === 'POST') res.end(JSON.stringify({ data: [{ url: baseUrl + '/image' }] }));
+    else if (downloads++ === 0) { res.writeHead(200, { 'Content-Length': '1000' }); res.write('part'); setTimeout(() => res.destroy(), 5); }
+    else res.end(png);
+  };
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, undefined);
+  assert.equal(downloads, 2);
+  assert.equal(calls.filter((call) => call.method === 'POST').length, 1);
+});
+
+test('无 Content-Length 的大响应在读取中截断', async () => {
+  const response = new Response(new ReadableStream({ start(controller) { controller.enqueue(Buffer.alloc(50)); controller.enqueue(Buffer.alloc(50)); controller.close(); } }));
+  await assert.rejects(readLimited(response, 60), /体积上限/);
+  assert.throws(() => decodeBase64(png.toString('base64'), 8), /体积上限/);
+  assert.throws(() => checkImage(Buffer.from('<html>error page</html>'), 100), /不是支持的图片/);
+});
+
+test('结果部分无效时仍发送有效图，并报告部分失败', async () => {
+  const f = fixture();
+  handler = (call, res) => jsonImage(res, [png, Buffer.from('<html>error page</html>')]);
+  const result = await f.tools.gen.execute(f.ctx, { prompt: '猫', count: 2 });
+  assert.equal(result.isError, undefined);
+  assert.equal(f.sent.length, 1);
+  assert.match(result.content, /部分结果未完成/);
+  assert.equal(calls.length, 1);
+});
+
+test('服务端多返回图片时仅交付请求数量', async () => {
+  const f = fixture();
+  handler = (call, res) => jsonImage(res, [png, png]);
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫', count: 1 })).isError, undefined);
+  assert.equal(f.sent.length, 1);
+});
+
+test('发送失败保留本地缓存，既不重复生成也不返回图片 base64', async () => {
+  const f = fixture();
+  let file;
+  f.ctx.sender.sendImage = async (key, image) => { file = image.file; cacheFiles.add(file); throw new Error('QQ unavailable'); };
+  const result = await f.tools.gen.execute(f.ctx, { prompt: '猫' });
+  assert.equal(result.isError, true);
+  assert.match(result.content, /本地缓存/);
+  assert.match(result.content, /不要重新生成/);
+  assert.deepEqual(await fs.readFile(file), png);
+  assert.equal(calls.length, 1);
+  assert.ok(!result.content.includes(png.toString('base64')));
+});
+
+test('sender 已更新 session 时不添加重复展示记录', async () => {
+  const f = fixture();
+  const send = f.ctx.sender.sendImage;
+  f.ctx.sender.sendImage = async (...args) => { const receipt = await send(...args); f.ctx.session.sent.push({ type: 'image' }); return receipt; };
+  await f.tools.gen.execute(f.ctx, { prompt: '猫' });
+  assert.equal(f.ctx.session.sent.length, 1);
+});
+
+test('上游回显密钥和图片时，工具与日志脱敏', async () => {
+  const f = fixture();
+  handler = (call, res) => {
+    res.writeHead(400);
+    res.end(JSON.stringify({ error: { message: `Bearer ${fixtureKey} data:image/png;base64,${png.toString('base64')}` } }));
+  };
+  const result = await f.tools.gen.execute(f.ctx, { prompt: '猫' });
+  assert.equal(result.isError, true);
+  for (const text of [result.content, ...f.warnings]) {
+    assert.ok(!text.includes(fixtureKey));
+    assert.ok(!text.includes(png.toString('base64')));
+  }
+});
+
+test('缺少发送器、无效参数、空结果或非 JSON 均返回可读错误', async () => {
+  const f = fixture();
+  assert.equal((await f.tools.gen.execute({}, { prompt: '猫' })).isError, true);
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫', count: 0 })).isError, true);
+  assert.equal(calls.length, 0);
+  for (const body of ['not json', '{"data":[]}']) {
+    handler = (call, res) => res.end(body);
+    assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, true);
+  }
+});
