@@ -5,8 +5,6 @@ description: QQ Agent 群聊回复配图技能；主聊天模型结合完整上�
 
 # 回复配图·梗鲸
 
-作者：nuoxi4n。版本：1.1.0。
-
 用于 QQ Agent，保留 `skill.json`、`index.js` 与 `lib/`。无需 npm 依赖或单独的 API Key，图源为 [梗鲸](https://aigengtu.com/)。
 
 ## 设计
