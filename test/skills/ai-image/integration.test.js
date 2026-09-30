@@ -54,7 +54,8 @@ function fixture(overrides = {}, entries = []) {
   const sent = [];
   setup({ config: () => config, fetch, registerTool: (tool) => { tools[tool.id] = tool; }, warn: (text) => warnings.push(text) });
   const ctx = {
-    chatKey: 'group:123', session: { id: 'test-session', trigger: 'message', sent: [] },
+    // 模拟主会话已成功执行 send_message；技能本身不得代替主模型发文字。
+    chatKey: 'group:123', session: { id: 'test-session', trigger: 'message', sent: [{ type: 'text', text: '我来试试，稍等～' }] },
     store: {
       findByMid(key, mid) { assert.equal(key, 'group:123'); return entries.find((entry) => String(entry.mid) === String(mid)); },
       recent(key) { assert.equal(key, 'group:123'); return entries; }
@@ -85,7 +86,7 @@ test('文生图发送 JSON、Bearer 认证和 OneBot base64，缓存文件与结
   assert.equal(f.sent.length, 1);
   assert.equal(f.sent[0].dataUrl, `base64://${png.toString('base64')}`);
   assert.deepEqual(await fs.readFile(f.sent[0].file), png);
-  assert.equal(f.ctx.session.sent.length, 1);
+  assert.equal(f.ctx.session.sent.length, 2);
   assert.ok(!result.content.includes(png.toString('base64')));
 });
 
@@ -358,7 +359,7 @@ test('sender 已更新 session 时不添加重复展示记录', async () => {
   const send = f.ctx.sender.sendImage;
   f.ctx.sender.sendImage = async (...args) => { const receipt = await send(...args); f.ctx.session.sent.push({ type: 'image' }); return receipt; };
   await f.tools.gen.execute(f.ctx, { prompt: '猫' });
-  assert.equal(f.ctx.session.sent.length, 1);
+  assert.equal(f.ctx.session.sent.length, 2);
 });
 
 test('上游回显密钥和图片时，工具与日志脱敏', async () => {
@@ -384,4 +385,51 @@ test('缺少发送器、无效参数、空结果或非 JSON 均返回可读错�
     handler = (call, res) => res.end(body);
     assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, true);
   }
+});
+
+for (const mode of ['gen', 'edit']) {
+  test(`${mode} 未发送开始文字时不请求接口，主模型发送后才等待处理并返回回复指引`, { timeout: 3000 }, async () => {
+    const f = fixture({}, [{ mid: 1, media: [{ kind: 'image', url: baseUrl + '/ref' }] }]);
+    for (const sent of [[], [{ type: 'image' }], [{ type: 'text', text: ' ' }]]) {
+      f.ctx.session.sent = sent;
+      const result = await f.tools[mode].execute(f.ctx, { prompt: '猫' });
+      assert.equal(result.isError, true);
+      assert.match(result.content, /先调用 send_message/);
+    }
+    assert.equal(calls.length, 0);
+    f.ctx.session.sent = [{ type: 'text', text: '好，我来画～' }];
+    f.ctx.sender.sendTextBatch = () => { throw new Error('技能不得自行调用聊天发送器'); };
+    let release, started;
+    const gate = new Promise(resolve => { release = resolve; });
+    const requestStarted = new Promise(resolve => { started = resolve; });
+    handler = async (call, res) => {
+      if (call.method === 'POST') { started(); await gate; jsonImage(res); }
+      else res.end(png);
+    };
+    let returned = false;
+    const pending = f.tools[mode].execute(f.ctx, { prompt: '猫' }).then(result => { returned = true; return result; });
+    try {
+      await requestStarted;
+      assert.equal(returned, false);
+      assert.equal(f.sent.length, 0);
+      release();
+      const result = await pending;
+      assert.equal(result.isError, undefined);
+      assert.equal(f.sent.length, 1);
+      assert.match(result.content, /完成文字尚未由本工具发送.*调用 send_message/);
+      assert.match(result.content, /不要因已发图就选择不发送/);
+      assert.equal(f.ctx.session.sent.filter(entry => entry.type === 'text').length, 1);
+    } finally { release(); await pending; }
+  });
+}
+
+test('平台未确认图片发送时不声称成功，并交给主会话模型说明失败', async () => {
+  const f = fixture();
+  f.ctx.sender.sendImage = async (key, image) => { cacheFiles.add(image.file); return { ok: false }; };
+  const result = await f.tools.gen.execute(f.ctx, { prompt: '猫' });
+  assert.equal(result.isError, true);
+  assert.match(result.content, /平台未确认发送/);
+  assert.match(result.content, /请通过 send_message 如实说明/);
+  assert.equal(f.ctx.session.sent.length, 1);
+  assert.equal(calls.length, 1);
 });

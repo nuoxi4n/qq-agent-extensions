@@ -1,7 +1,7 @@
 {
   "id": "ai-image",
   "name": "AI生图",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 1,
   "category": "media",
   "description": "支持文生图与图生图：共用 Base URL 和 API Key，按文字生成图片或参考会话图片修改，并发送到当前群聊或私聊。",

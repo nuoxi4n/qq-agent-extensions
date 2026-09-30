@@ -7,7 +7,7 @@
 | 类型 | ID | 名称 | 功能与说明 |
 | --- | --- | --- | --- |
 | Skill | `reply-meme` | 回复配图·梗鲸表情包 | [结合聊天上下文选择和发送表情包](skills/reply-meme/README.md) |
-| Skill | `ai-image` | AI生图 | [文生图和图生图，并将结果发送到群聊或私聊。](skills/ai-image/README.md) |
+| Skill | `ai-image` | AI生图 | [文生图和图生图，并将结果发送到群聊或私聊](skills/ai-image/README.md) |
 | Plugin | `rapport` | 好感度养成 | [自动计分、关系表达、查询与排行](plugins/rapport/README.md) |
 
 ## 目录约定

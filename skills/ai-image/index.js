@@ -54,13 +54,13 @@ export function setup(api) {
   };
   api.registerTool({
     id: 'gen', name: '文生图', category: 'media', icon: '🎨',
-    description: '当用户要求从文字描述画图、生成插画或设计画面时使用。纯文字生成，不使用参考图；参考已有图片修改时用 edit。生成结果直接发送到当前会话，不需要再调发图工具。',
+    description: '当用户明确要求从文字描述画图、生成插画或设计画面时使用；参考已有图片修改时用 edit。先用 send_message 按当前人设告知正在处理，发送成功后再调用本工具。工具等待生图并直接发图，返回后再用 send_message 自然回复结果，不要重复发图。',
     parameters: { type: 'object', properties: common, required: ['prompt'] },
     execute: (ctx, args) => execute('generate', ctx, args)
   });
   api.registerTool({
     id: 'edit', name: '图生图', category: 'media', icon: '🖌️',
-    description: '当用户要求修改已发图片、变换风格或参考图片创作时使用。messageId 指定当前会话的带图消息；省略时使用触发消息或最近图片，imageIndex 选择第几张。生成结果直接发送，不需要再调发图工具。',
+    description: '当用户明确要求修改已发图片、变换风格或参考图片创作时使用。messageId 指定当前会话带图消息，imageIndex 选择第几张。先用 send_message 按人设告知正在处理，发送成功后调用本工具；工具等待改图并发图，返回后再用 send_message 回复结果，不要重复发图。',
     parameters: {
       type: 'object',
       properties: {
@@ -89,8 +89,9 @@ export function promptSections() {
     id: 'ai-image-routing', title: 'AI生图', priority: 35,
     content: '用户要求纯文字创作时用 ai-image__gen；要求基于已发图片修改时用 ai-image__edit。'
       + '用户指定某张图时传真实 messageId 和从 1 开始的 imageIndex；图片指代不清时先确认，不要猜测。'
-      + '两个工具都会直接发图，不要重复调用发送工具；未查看生成图片时不要描述其细节。'
-      + '生成超时或发送失败时不要自动重新生成，先告知错误；如有本地缓存可重发已有图片。'
+      + '执行顺序：先调用 send_message 按当前人设自然告知正在处理，确认文字发送成功后调用生图或改图工具；等工具返回，再调用 send_message 自然说明结果。'
+      + '图片由工具直接发送，完成文字仍需你发送；不要因已发图就选择不发送或直接 finish，不要重复发图，未查看图片时不要编造细节。'
+      + '失败时用 send_message 如实说明，不要自动重新生成；已生成但发送失败时只考虑重发已有缓存。'
   }];
 }
 
@@ -136,6 +137,10 @@ async function execute(mode, ctx, args) {
   try {
     if (typeof ctx?.sender?.sendImage !== 'function') throw new Error('当前会话没有可用的图片发送器');
     operation = beginOperation(ctx);
+    // 只观察公开的本轮发送记录，不调用宿主模型或发送固定文字。
+    if (!ctx.session?.sent?.some((entry) => entry.type === 'text' && typeof entry.text === 'string' && entry.text.trim())) {
+      return { content: '尚未确认本轮已发送开始文字，因此没有调用生图接口。请先调用 send_message，按当前人设自然告知正在生图或改图；发送成功后再调用本工具。', isError: true };
+    }
     const result = await prepare(mode, args, ctx, operation);
     const problems = [...result.problems];
     let sent = 0;
@@ -148,6 +153,9 @@ async function execute(mode, ctx, args) {
           { ...(image.filePath ? { file: image.filePath } : {}),
             dataUrl: image.dataUrl.replace(/^data:[^;,]+;base64,/, 'base64://') },
           { note: mode === 'edit' ? 'AI改图' : 'AI绘图' });
+        if (receipt === false || receipt?.ok === false || receipt?.success === false || receipt?.isError === true) {
+          throw new Error('平台未确认发送');
+        }
         sent++;
         // sender 负责聊天留档；仅在它未同步更新 session 时补充本轮展示记录。
         if (Array.isArray(ctx.session?.sent) && ctx.session.sent.length === sentBefore) {
@@ -163,11 +171,11 @@ async function execute(mode, ctx, args) {
     try { ctx.emit?.('session-update', ctx.session?.id); } catch { /* 通知失败不影响发送结果 */ }
     return { content: `已${result.origin ? `参考${result.origin}` : ''}生成并发送 ${sent} 张图片到当前会话。`
       + (problems.length ? `部分结果未完成：${problems.join('；')}。不要自动重新生成。` : '')
-      + '无需再次发送；尚未查看图片，不要编造画面细节。' };
+      + '图片无需再次发送，但完成文字尚未由本工具发送。请现在调用 send_message，按当前人设和请求自然回复结果；不要因已发图就选择不发送或直接 finish。尚未查看图片，不要编造画面细节。' };
   } catch (error) {
     const message = errorMessage(error, operation?.apiKey);
     try { warn(message); } catch { /* 日志故障不能让工具异常冒泡 */ }
-    return { content: `AI生图失败：${message}`, isError: true };
+    return { content: `AI生图失败：${message}。本工具没有发送失败文字；请通过 send_message 如实说明，不要自动重新生成。`, isError: true };
   } finally { operation?.finish(); }
 }
 
