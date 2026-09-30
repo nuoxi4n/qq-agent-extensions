@@ -1,0 +1,17 @@
+{
+  "name": "qq-agent-extensions",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "nuoxi4n 的 QQ Agent 技能与插件合集",
+  "author": "nuoxi4n",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node scripts/test.mjs",
+    "test:audit": "node scripts/test.mjs --audit",
+    "pack": "node scripts/pack.mjs",
+    "pack:extension": "node scripts/pack.mjs",
+    "pack:skill": "node scripts/pack.mjs --type skills",
+    "pack:plugin": "node scripts/pack.mjs --type plugins"
+  }
+}

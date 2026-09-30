@@ -1,0 +1,142 @@
+{
+  "id": "rapport",
+  "name": "好感度养成",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "category": "message",
+  "description": "独立的关系养成系统：每轮按说话人的关系等级调整称呼、语气、关心和接话，高好感有明显回复变化；含防刷分、查询和排行。",
+  "author": "nuoxi4n",
+  "enabledByDefault": true,
+  "capabilities": [],
+  "requires": [],
+  "settings": {
+    "relationshipStrength": 3,
+    "closeStyle": "自然亲近",
+    "highAffinityNote": "",
+    "perMessage": 1,
+    "atBotBonus": 3,
+    "dailyCap": 20,
+    "levelThresholds": "50,200,500,1000",
+    "decayAfterDays": 7,
+    "decayPerDay": 1,
+    "gainCooldownSeconds": 30,
+    "duplicateWindowMinutes": 10,
+    "ownerQq": ""
+  },
+  "configSchema": {
+    "relationshipStrength": {
+      "type": "number",
+      "label": "回复变化强度",
+      "description": "1 含蓄 / 2 自然 / 3 明显；默认 3，高等级从第一句体现熟悉或关心。",
+      "min": 1,
+      "max": 3,
+      "step": 1
+    },
+    "closeStyle": {
+      "type": "enum",
+      "label": "高好感表达风格",
+      "description": "作用于老友和挚友，仍保留角色原有性格。",
+      "values": [
+        "自然亲近",
+        "温柔关心",
+        "熟人拌嘴"
+      ],
+      "options": [
+        {
+          "value": "自然亲近",
+          "label": "自然亲近"
+        },
+        {
+          "value": "温柔关心",
+          "label": "温柔关心"
+        },
+        {
+          "value": "熟人拌嘴",
+          "label": "熟人拌嘴"
+        }
+      ]
+    },
+    "highAffinityNote": {
+      "type": "string",
+      "label": "高好感表达补充",
+      "description": "选填。为老友和挚友补充统一的表达偏好，例如“更爱开玩笑”。最多 400 字，留空使用默认风格。",
+      "multiline": true
+    },
+    "perMessage": {
+      "type": "number",
+      "label": "每条发言加分",
+      "description": "群友每发一条消息加多少分。默认 1，设 0 可关闭发言加分。",
+      "min": 0,
+      "max": 20,
+      "step": 1
+    },
+    "atBotBonus": {
+      "type": "number",
+      "label": "@机器人额外加分",
+      "description": "消息里 @ 了机器人时额外加的分。默认 3。",
+      "min": 0,
+      "max": 50,
+      "step": 1
+    },
+    "dailyCap": {
+      "type": "number",
+      "label": "每人每天加分上限",
+      "description": "同一个人在一天内最多能加多少分，防刷屏刷分。默认 20。",
+      "min": 1,
+      "max": 500,
+      "step": 1
+    },
+    "levelThresholds": {
+      "type": "string",
+      "label": "等级门槛",
+      "description": "Lv.2~Lv.5 的 4 个严格递增正整数，用逗号分隔。默认 50,200,500,1000；无效输入回退默认门槛。"
+    },
+    "decayAfterDays": {
+      "type": "number",
+      "label": "多少天不发言开始衰减",
+      "description": "连续多少天没发言后开始扣分。默认 7。",
+      "min": 0,
+      "max": 365,
+      "step": 1
+    },
+    "decayPerDay": {
+      "type": "number",
+      "label": "每天衰减多少分",
+      "description": "超过上面的天数后，每过一天扣多少分（不会扣到负数）。默认 1，设 0 关闭衰减。",
+      "min": 0,
+      "max": 50,
+      "step": 1
+    },
+    "gainCooldownSeconds": {
+      "type": "number",
+      "label": "同一人加分间隔（秒）",
+      "description": "冷却期间照常聊天，只不重复加分。0 关闭。",
+      "min": 0,
+      "max": 3600,
+      "step": 1
+    },
+    "duplicateWindowMinutes": {
+      "type": "number",
+      "label": "重复内容去重（分钟）",
+      "description": "相同文字在窗口内只加一次，忽略空白和标点。0 关闭。",
+      "min": 0,
+      "max": 1440,
+      "step": 1
+    },
+    "ownerQq": {
+      "type": "string",
+      "label": "主人 QQ 号",
+      "description": "选填；主人固定满级，并可用自然语言调整设置。多个 QQ 号用逗号分隔；留空不设主人。不会读取其他插件的主人配置。"
+    }
+  },
+  "prompt": {
+    "sections": [
+      {
+        "id": "rapport-note",
+        "title": "好感度养成",
+        "priority": 35,
+        "content": "每轮按“本轮关系与说话方式”自然回复，让高好感体现在交流方式里。有人问好感度或排行时调用 rapport__check / rapport__rank 查真实数据，不编数字；聊天中不主动报分。主人明确要求调整设置时可用 rapport__tune，只有明确要求重置时才使用 rapport__reset；权限由工具校验。聊天修改优先于控制台值，主人可用 tune clear 清除覆盖。"
+      }
+    ]
+  }
+}
