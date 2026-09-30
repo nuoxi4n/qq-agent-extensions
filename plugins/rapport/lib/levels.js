@@ -1,13 +1,14 @@
 // 等级、衰减和主人固定满级规则；不读取文件。
+import { cents, points, formatPoints, boundedScore, SCORE_MAX, validPoints } from './points.js';
 export function createLevels(services) {
   const { DAY } = services;
 
-  const LEVEL_TITLES = ['陌生', '眼熟', '熟人', '老友', '挚友'];
-  const DEFAULT_THRESHOLDS = [50, 200, 500, 1000];
+  const LEVEL_TITLES = ['初识', '眼熟', '熟络', '亲近', '知己'];
+  const DEFAULT_THRESHOLDS = [5, 20, 50, 100];
 
   function parseThresholds(text) {
     const parts = String(text).trim().split(/[,，\s]+/).map(Number);
-    return parts.length === 4 && parts.every((n, i) => Number.isSafeInteger(n) && n > 0 && (i === 0 || n > parts[i-1])) ? parts : null;
+    return parts.length === 4 && parts[3] === SCORE_MAX && parts.every((n, i) => validPoints(n) && n > 0 && (i === 0 || n > parts[i-1])) ? parts : null;
   }
 
   function levelTable(s) {
@@ -22,7 +23,8 @@ export function createLevels(services) {
   }
 
   function levelOf(score, s) {
-    const v = Math.max(0, Math.floor(Number(score) || 0));
+    if (Number(score) < 0) return { min: Number(s?.aiMinScore ?? -100), level: 0, title: '疏远' };
+    const v = boundedScore(Number(score) || 0);
     const table = levelTable(s);
     for (const L of table) if (v >= L.min) return L;
     return table[table.length - 1];
@@ -33,10 +35,11 @@ export function createLevels(services) {
   }
 
   function progressText(score, s) {
-    const v = Math.max(0, Math.floor(Number(score) || 0));
+    const v = boundedScore(Number(score) || 0);
+    if (v < 0) return `再攒 ${formatPoints(-v)} 分回到 Lv.1「初识」`;
     const next = levelTable(s).filter((L) => L.min > v).sort((a, b) => a.min - b.min)[0];
-    if (!next) return '已经是最高等级「挚友」了';
-    return `再攒 ${next.min - v} 分升到 Lv.${next.level}「${next.title}」`;
+    if (!next) return '已经是最高等级「知己」了';
+    return `再攒 ${formatPoints(points(cents(next.min) - cents(v)))} 分升到 Lv.${next.level}「${next.title}」`;
   }
 
   function applyDecay(rec, now, s) {
@@ -44,7 +47,7 @@ export function createLevels(services) {
     if (rec.pinned === true) return 0; // 主人恒定满级
 
     let loss = 0;
-    const perDay = Math.max(0, Number(s?.decayPerDay) || 0);
+    const perDay = s?.decayEnabled === false ? 0 : Math.max(0, Number(s?.decayPerDay) || 0);
     const lastSeen = Number(rec.lastSeen) || 0;
     const graceEnd = lastSeen + Math.max(0, Number(s?.decayAfterDays) || 0) * DAY;
     // 查询不会刷新宽限期；每次只结算尚未结算的完整一天。
@@ -52,9 +55,11 @@ export function createLevels(services) {
     if (lastSeen && now > anchor) {
       const days = Math.floor((now - anchor) / DAY);
       if (days > 0) {
-        loss = Math.min(Math.max(0, Number(rec.score) || 0), days * perDay);
-        rec.score = Math.max(0, (Number(rec.score) || 0) - loss);
-        rec.decayed = (Number(rec.decayed) || 0) + loss;
+        const score = cents(boundedScore(Number(rec.score) || 0));
+        const movement = Math.min(Math.abs(score), days * cents(perDay));
+        loss = points(movement);
+        rec.score = points(score - Math.sign(score) * movement);
+        rec.decayed = points(cents(Number(rec.decayed) || 0) + movement);
         rec.decayAnchor = anchor + days * DAY;
       }
     }
@@ -80,15 +85,16 @@ export function createLevels(services) {
   }
 
   function ownerPoints(s) {
-    return Math.max(9999, levelTable(s)[0].min);
+    return SCORE_MAX;
   }
+
+  function isProtectedOwner(userId, s) { return isOwner(userId, s) && (!s.aiMode || s.aiProtectOwner !== false); }
 
   function pinOwner(rec, s) {
     const max = ownerPoints(s);
     rec.pinned = true;
     rec.score = max;
     rec.level = levelOf(max, s).level;
-    rec.dayGain = 0;
 
   }
 
@@ -97,12 +103,12 @@ export function createLevels(services) {
     const lv = levelOf(max, s);
     return [
       `对象：${name || userId}（QQ ${userId}）${isSelfQuery ? '，也就是正在提问的这个人' : ''}`,
-      `好感度：${max} 分（满级，主人固定值，不参与加分和衰减）`,
+      `好感度：${formatPoints(max)} 分（满级，主人固定值，不参与加分和衰减）`,
       `等级：Lv.${lv.level}「${lv.title}」 · 身份：主人`,
       '升级进度：已经是最高等级，无需再攒',
-      '备注：TA 在这个会话里还没有发言记录，所以没有发言数和认识时间可显示。'
+      '备注：TA 在这个会话里还没有发言记录，所以没有发言数和首次计分时间可显示。'
     ].join('\n');
   }
 
-  return { parseThresholds, levelTable, levelOf, titleOf, progressText, applyDecay, ownerList, isOwner, ownerPoints, pinOwner, ownerReport, LEVEL_TITLES };
+  return { parseThresholds, levelTable, levelOf, titleOf, progressText, applyDecay, ownerList, isOwner, isProtectedOwner, ownerPoints, pinOwner, ownerReport, LEVEL_TITLES };
 }

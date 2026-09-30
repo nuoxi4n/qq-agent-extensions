@@ -2,7 +2,7 @@
 export function createTool(services) {
   const {
     lifecycle, assertRunning, ensureLoaded, currentSettings, chatKeyOf, syncOwners, storage,
-    findMember, markDirty, flush, trustedRequester, ownerList
+    findMember, trustedRequester, ownerList
   } = services;
   return {
     id: 'reset',
@@ -59,24 +59,30 @@ export function createTool(services) {
         const target = String(args?.target ?? '').trim();
         if (!target) {
           const n = Object.keys(chat.members || {}).length;
-          chat.members = {};
-          chat.resetAt = Date.now(); // 保留去重记录，防止清空后补扫把旧分加回来
-          syncOwners();
-          markDirty();
-          flush();
-          return { content: `已清空本会话全部好感度记录（共 ${n} 人）。此操作不可撤销。主人的满级记录会在 TA 下次发言时重新建立。` };
+          return storage.transaction(() => {
+            chat.members = {};
+            chat.aiEligible = [];
+            chat.aiAudit = [];
+            chat.resetAt = Date.now(); // 保留去重记录，防止清空后补扫把旧分加回来
+            syncOwners();
+
+            return { content: `已清空本会话全部好感度记录（共 ${n} 人）。此操作不可撤销。新记录按当前计分模式和主人保护设置建立。` };
+          });
         }
 
         const hit = findMember(chat.members || {}, target);
         if (!hit) return { content: `没有找到「${target}」的好感度记录，无需重置。` };
         if (hit.ambiguous > 1) return { content: '同名成员不唯一，请用准确 QQ 号重置。', isError: true };
         const name = hit.rec.name || hit.userId;
-        chat.resetUsers ||= {};
-        chat.resetUsers[hit.userId] = Date.now();
-        delete chat.members[hit.userId];
-        markDirty();
-        flush();
-        return { content: `已清空 ${name}（QQ ${hit.userId}）的好感度记录。此操作不可撤销。` };
+        return storage.transaction(() => {
+          chat.resetUsers ||= {};
+          chat.resetUsers[hit.userId] = Date.now();
+          delete chat.members[hit.userId];
+          chat.aiEligible = (chat.aiEligible || []).filter(item => !item.key.startsWith(`${hit.userId}:`));
+          chat.aiAudit = (chat.aiAudit || []).filter(item => item.userId !== hit.userId);
+
+          return { content: `已清空 ${name}（QQ ${hit.userId}）的好感度记录。此操作不可撤销。` };
+        });
       } catch (error) {
         return { content: `重置好感度失败：${error?.message ?? error}`, isError: true };
       }

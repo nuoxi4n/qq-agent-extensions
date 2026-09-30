@@ -1,4 +1,4 @@
-/** 好感度养成（rapport）v1.0.0 · nuoxi4n */
+/** 好感度养成（rapport）v1.1.0 · nuoxi4n */
 
 import * as utils from './lib/utils.js';
 import * as levels from './lib/levels.js';
@@ -13,11 +13,12 @@ import * as check from './lib/tools/check.js';
 import * as rank from './lib/tools/rank.js';
 import * as tune from './lib/tools/tune.js';
 import * as reset from './lib/tools/reset.js';
+import * as adjust from './lib/tools/adjust.js';
 import { createPlugin } from './lib/plugin.js';
 
 const modules = {
   utils, levels, config, messages, storage, scoring, relationship,
-  context, tools, check, rank, tune, reset
+  context, tools, check, rank, tune, reset, adjust
 };
 
 // 独立实例供宿主和测试使用；模块加载遵循标准 ESM 静态导入。

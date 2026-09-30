@@ -2,7 +2,7 @@
 export function createTool(services) {
   const {
     lifecycle, assertRunning, ensureLoaded, currentSettings, chatKeyOf, syncOwners, storage,
-    markDirty, flush, trustedRequester, ownerList, TUNABLE, coerceValue, formatVal
+    trustedRequester, ownerList, TUNABLE, coerceValue, formatVal, mechanicalKeys, syncMode
   } = services;
   return {
     id: 'tune',
@@ -29,7 +29,7 @@ export function createTool(services) {
         },
         value: {
           type: 'string',
-          description: '新值，一律用字符串传。数字写 "2"；风格或补充直接写文本；QQ 号多个用英文逗号分隔；等级门槛写 "50,200,500,1000"'
+          description: '新值，一律用字符串传。分数可写 "0.25"，最多两位小数；风格或补充直接写文本；QQ 号多个用英文逗号分隔；等级门槛写 "5,20,50,100"'
         }
       },
       required: ['action']
@@ -72,7 +72,7 @@ export function createTool(services) {
           for (const [key, meta] of Object.entries(TUNABLE)) {
             const val = s[key];
             const src = Object.prototype.hasOwnProperty.call(overrides, key) ? '聊天改过' : '控制台/默认';
-            lines.push(`${meta.label}（${key}）= ${formatVal(val)} ［${src}］`);
+            lines.push(`${meta.label}（${key}）= ${formatVal(val)} ［${src}${s.aiMode && mechanicalKeys.includes(key) ? '；AI 模式停用、不可通过聊天修改' : ''}］`);
           }
           lines.push('', '要改哪一项，直接说「把 XX 改成 Y」就行；说「恢复默认设定」可清除所有聊天里的修改。');
           return { content: lines.join('\n') };
@@ -81,6 +81,7 @@ export function createTool(services) {
         if (action === 'set') {
           const item = String(args?.item ?? '').trim();
           const meta = Object.hasOwn(TUNABLE, item) ? TUNABLE[item] : null;
+          if (s.aiMode && mechanicalKeys.includes(item)) return { content: 'AI 模式下机械计分项不生效且不能通过聊天修改，请先关闭 AI 模式。', isError: true };
           if (!meta) {
             return {
               content: `没有叫「${item || '(空)'}」的设置项。可选项：${Object.keys(TUNABLE).join('、')}。`,
@@ -90,37 +91,43 @@ export function createTool(services) {
           const parsed = coerceValue(meta, args?.value);
           if (!parsed.ok) return { content: parsed.error, isError: true };
 
-          if (!storage.db.meta) storage.db.meta = {};
-          if (!storage.db.meta.overrides || typeof storage.db.meta.overrides !== 'object') storage.db.meta.overrides = {};
-          storage.db.meta.overrides[item] = parsed.value;
-          syncOwners();
-          markDirty();
-          flush();
+          return storage.transaction(() => {
+            if (!storage.db.meta) storage.db.meta = {};
+            if (!storage.db.meta.overrides || typeof storage.db.meta.overrides !== 'object') storage.db.meta.overrides = {};
+            storage.db.meta.overrides[item] = parsed.value;
+            syncMode();
+            syncOwners();
 
-          const extra = item === 'ownerQq' ? '（新的主人已生效，好感度立刻变满级）' : '';
-          return { content: `已把「${meta.label}」改成 ${formatVal(parsed.value)}${extra}。此改动优先级高于控制台设置，随时可以说「恢复默认设定」撤销。` };
+            const extra = item === 'ownerQq' ? '（新的管理身份已生效；固定满分按主人保护设置处理）' : '';
+            return { content: `已把「${meta.label}」改成 ${formatVal(parsed.value)}${extra}。此改动优先级高于控制台设置，随时可以说「恢复默认设定」撤销。` };
+          });
         }
 
         if (action === 'clear') {
           const item = String(args?.item ?? '').trim();
           const overrides = storage.db.meta?.overrides || {};
+          if (s.aiMode && mechanicalKeys.includes(item)) return { content: 'AI 模式下不能修改机械计分项，请先关闭 AI 模式。', isError: true };
           if (item) {
             if (!Object.hasOwn(TUNABLE, item)) return { content: `没有叫「${item}」的设置项。`, isError: true };
             if (!Object.prototype.hasOwnProperty.call(overrides, item)) {
               return { content: `「${TUNABLE[item].label}」本来就没在聊天里改过，不需要清除。` };
             }
-            delete overrides[item];
-            syncOwners();
-            markDirty();
-            flush();
-            return { content: `已清除「${TUNABLE[item].label}」的聊天修改，恢复为控制台/默认值 ${formatVal(currentSettings()[item])}。` };
+            return storage.transaction(() => {
+              delete overrides[item];
+              syncMode();
+              syncOwners();
+
+              return { content: `已清除「${TUNABLE[item].label}」的聊天修改，恢复为控制台/默认值 ${formatVal(currentSettings()[item])}。` };
+            });
           }
           const n = Object.keys(overrides).length;
-          storage.db.meta.overrides = {};
-          syncOwners();
-          markDirty();
-          flush();
-          return { content: n ? `已清除全部 ${n} 项聊天修改，恢复为控制台/默认设定。` : '当前没有任何聊天里做过的修改，不用清除。' };
+          return storage.transaction(() => {
+            storage.db.meta.overrides = {};
+            syncMode();
+            syncOwners();
+
+            return { content: n ? `已清除全部 ${n} 项聊天修改，恢复为控制台/默认设定。` : '当前没有任何聊天里做过的修改，不用清除。' };
+          });
         }
 
         return { content: `看不懂 action「${action}」。只能用 list / set / clear。`, isError: true };

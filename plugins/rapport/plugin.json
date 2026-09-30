@@ -1,7 +1,7 @@
 {
   "id": "rapport",
   "name": "好感度养成",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "apiVersion": 1,
   "category": "message",
   "description": "独立的关系养成系统：每轮按说话人的关系等级调整称呼、语气、关心和接话，高好感有明显回复变化；含防刷分、查询和排行。",
@@ -13,15 +13,23 @@
     "relationshipStrength": 3,
     "closeStyle": "自然亲近",
     "highAffinityNote": "",
-    "perMessage": 1,
-    "atBotBonus": 3,
-    "dailyCap": 20,
-    "levelThresholds": "50,200,500,1000",
+    "perMessage": 0.1,
+    "atBotBonus": 0.3,
+    "dailyCap": 2,
+    "levelThresholds": "5,20,50,100",
     "decayAfterDays": 7,
-    "decayPerDay": 1,
+    "decayPerDay": 0.1,
     "gainCooldownSeconds": 30,
     "duplicateWindowMinutes": 10,
-    "ownerQq": ""
+    "ownerQq": "",
+    "aiMode": false,
+    "aiMaxGain": 0.3,
+    "aiMaxLoss": 0.3,
+    "aiDailyLossCap": 1,
+    "aiCooldownSeconds": 30,
+    "aiMinScore": -100,
+    "aiProtectOwner": true,
+    "decayEnabled": true
   },
   "configSchema": {
     "relationshipStrength": {
@@ -35,7 +43,7 @@
     "closeStyle": {
       "type": "enum",
       "label": "高好感表达风格",
-      "description": "作用于老友和挚友，仍保留角色原有性格。",
+      "description": "作用于亲近和知己，仍保留角色原有性格。",
       "values": [
         "自然亲近",
         "温柔关心",
@@ -59,42 +67,42 @@
     "highAffinityNote": {
       "type": "string",
       "label": "高好感表达补充",
-      "description": "选填。为老友和挚友补充统一的表达偏好，例如“更爱开玩笑”。最多 400 字，留空使用默认风格。",
+      "description": "选填。为亲近和知己补充统一的表达偏好，例如“更爱开玩笑”。最多 400 字，留空使用默认风格。",
       "multiline": true
     },
     "perMessage": {
       "type": "number",
       "label": "每条发言加分",
-      "description": "群友每发一条消息加多少分。默认 1，设 0 可关闭发言加分。",
+      "description": "普通模式每条发言加 0.10 分；AI 模式不生效。",
       "min": 0,
-      "max": 20,
-      "step": 1
+      "max": 10,
+      "step": 0.01
     },
     "atBotBonus": {
       "type": "number",
       "label": "@机器人额外加分",
-      "description": "消息里 @ 了机器人时额外加的分。默认 3。",
+      "description": "普通模式 @ 机器人额外加 0.30 分；AI 模式不生效。",
       "min": 0,
-      "max": 50,
-      "step": 1
+      "max": 10,
+      "step": 0.01
     },
     "dailyCap": {
       "type": "number",
       "label": "每人每天加分上限",
-      "description": "同一个人在一天内最多能加多少分，防刷屏刷分。默认 20。",
-      "min": 1,
-      "max": 500,
-      "step": 1
+      "description": "两种模式共用，每天累计最多增加 2.00 分，0 关闭加分。扣分不返还额度。",
+      "min": 0,
+      "max": 100,
+      "step": 0.01
     },
     "levelThresholds": {
       "type": "string",
       "label": "等级门槛",
-      "description": "Lv.2~Lv.5 的 4 个严格递增正整数，用逗号分隔。默认 50,200,500,1000；无效输入回退默认门槛。"
+      "description": "Lv.2~Lv.5 的四个递增正数，最多两位小数，最高必须为 100。默认 5,20,50,100。"
     },
     "decayAfterDays": {
       "type": "number",
       "label": "多少天不发言开始衰减",
-      "description": "连续多少天没发言后开始扣分。默认 7。",
+      "description": "真实发言后多少天开始关系淡化，默认 7；后台查询不延长宽限期。",
       "min": 0,
       "max": 365,
       "step": 1
@@ -102,15 +110,15 @@
     "decayPerDay": {
       "type": "number",
       "label": "每天衰减多少分",
-      "description": "超过上面的天数后，每过一天扣多少分（不会扣到负数）。默认 1，设 0 关闭衰减。",
+      "description": "默认每天向零靠近 0.10 分，最多两位小数；0 不淡化。",
       "min": 0,
-      "max": 50,
-      "step": 1
+      "max": 10,
+      "step": 0.01
     },
     "gainCooldownSeconds": {
       "type": "number",
       "label": "同一人加分间隔（秒）",
-      "description": "冷却期间照常聊天，只不重复加分。0 关闭。",
+      "description": "冷却期间照常聊天，只不重复加分。0 关闭。 AI 模式下不生效；当前宿主表单不支持条件禁用，保存此项不会影响 AI 计分。",
       "min": 0,
       "max": 3600,
       "step": 1
@@ -118,7 +126,7 @@
     "duplicateWindowMinutes": {
       "type": "number",
       "label": "重复内容去重（分钟）",
-      "description": "相同文字在窗口内只加一次，忽略空白和标点。0 关闭。",
+      "description": "相同文字在窗口内只加一次，忽略空白和标点。0 关闭。 AI 模式下不生效；当前宿主表单不支持条件禁用，保存此项不会影响 AI 计分。",
       "min": 0,
       "max": 1440,
       "step": 1
@@ -126,7 +134,62 @@
     "ownerQq": {
       "type": "string",
       "label": "主人 QQ 号",
-      "description": "选填；主人固定满级，并可用自然语言调整设置。多个 QQ 号用逗号分隔；留空不设主人。不会读取其他插件的主人配置。"
+      "description": "拥有设置和重置权限的 QQ 号，多个用逗号分隔。普通模式固定满级；AI 模式是否固定满分由主人保护开关决定。不读取其他插件配置。"
+    },
+    "aiMode": {
+      "type": "boolean",
+      "label": "AI 好感度模式",
+      "description": "默认关闭。开启后仅由主会话模型调用调分工具加减；发言、@、机械加分间隔和重复奖励规则不生效。保留已有分数和当日额度。"
+    },
+    "aiMaxGain": {
+      "type": "number",
+      "label": "AI 单次最多加分",
+      "description": "AI 单次默认最多加 0.30 分，支持两位小数。此值是上限，不是每次建议加分；模型按互动依据选择幅度，小幅优先。",
+      "min": 0.01,
+      "max": 10,
+      "step": 0.01
+    },
+    "aiMaxLoss": {
+      "type": "number",
+      "label": "AI 单次最多扣分",
+      "description": "AI 单次默认最多扣 0.30 分，支持两位小数。此值是上限，不是每次建议扣分；扣分须有明确依据，判断不清时不调整。",
+      "min": 0.01,
+      "max": 10,
+      "step": 0.01
+    },
+    "aiDailyLossCap": {
+      "type": "number",
+      "label": "AI 每人每天扣分上限",
+      "description": "AI 每天默认累计最多扣 1.00 分，0 关闭扣分；不与加分额度抵消。",
+      "min": 0,
+      "max": 100,
+      "step": 0.01
+    },
+    "aiCooldownSeconds": {
+      "type": "number",
+      "label": "AI 调分最小间隔（秒）",
+      "description": "同一会话同一成员两次有效 AI 调分之间的间隔，默认 30；不限制查询和正常回复。",
+      "min": 0,
+      "max": 3600,
+      "step": 1
+    },
+    "aiMinScore": {
+      "type": "number",
+      "label": "AI 最低好感度",
+      "description": "AI 扣分下限，默认 -100.00，可设为 -100.00～0.00；分数总范围始终为 ±100。",
+      "min": -100,
+      "max": 0,
+      "step": 0.01
+    },
+    "aiProtectOwner": {
+      "type": "boolean",
+      "label": "AI 模式主人固定满分",
+      "description": "默认开启：主人仍固定满分。关闭后 AI 可按相同规则调整主人分数，但主人管理权限不受分数影响。普通模式仍保护主人。"
+    },
+    "decayEnabled": {
+      "type": "boolean",
+      "label": "长期关系淡化",
+      "description": "普通和 AI 模式共用，默认开启。超过未互动宽限期后，正分减少、负分回升，逐渐靠近零；关闭期间不补算。不会删除聊天记忆。"
     }
   },
   "prompt": {
@@ -135,7 +198,7 @@
         "id": "rapport-note",
         "title": "好感度养成",
         "priority": 35,
-        "content": "每轮按“本轮关系与说话方式”自然回复，让高好感体现在交流方式里。有人问好感度或排行时调用 rapport__check / rapport__rank 查真实数据，不编数字；聊天中不主动报分。主人明确要求调整设置时可用 rapport__tune，只有明确要求重置时才使用 rapport__reset；权限由工具校验。聊天修改优先于控制台值，主人可用 tune clear 清除覆盖。"
+        "content": "每轮按“本轮关系与说话方式”自然回复，让高好感体现在交流方式里。有人明确问好感度或排行时，先调用 rapport__check / rapport__rank 查真实数据，再调用 send_message 按人设回复；工具结果并未发送到 QQ，不要只写普通正文或查询后直接结束。低好感只影响语气，不代表不回答明确提问；首次计分记录不是入群时间。聊天中不主动报分。主人明确要求调整设置时可用 rapport__tune，只有明确要求重置时才使用 rapport__reset；权限由工具校验。聊天修改优先于控制台值，主人可用 tune clear 清除覆盖。 AI 模式开启时才按动态计分规则使用 rapport__adjust；普通模式不要调用调分工具。"
       }
     ]
   }

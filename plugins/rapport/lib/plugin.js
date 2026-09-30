@@ -1,8 +1,10 @@
 // 组装实例和生命周期；模块之间通过显式服务对象协作，不共享全局状态。
+import { createReplyGuard } from './reply-guard.js';
 export function createPlugin(modules, pluginUrl) {
   let api = null;
   let flushTimer = null;
   const lifecycle = { running: false, epoch: 0 };
+  const replyGuard = createReplyGuard();
   const log = (...args) => api?.log?.(...args);
   const warn = (...args) => api?.warn?.(...args);
   const utils = modules.utils;
@@ -38,7 +40,7 @@ export function createPlugin(modules, pluginUrl) {
     api = hostApi;
     modules.tools.registerTools(api, services, [
       modules.check.createTool, modules.rank.createTool,
-      modules.tune.createTool, modules.reset.createTool
+      modules.tune.createTool, modules.reset.createTool, modules.adjust.createTool
     ]);
     log('好感度养成已加载');
   }
@@ -48,6 +50,7 @@ export function createPlugin(modules, pluginUrl) {
     lifecycle.running = true;
     try {
       storage.ensureLoaded();
+      scoring.syncMode();
       scoring.syncOwners();
       storage.markDirty();
       storage.flush();
@@ -67,6 +70,7 @@ export function createPlugin(modules, pluginUrl) {
     if (flushTimer) clearInterval(flushTimer);
     flushTimer = null;
     relationship.clear();
+    replyGuard.clear();
     storage.flush();
   }
 
@@ -75,6 +79,9 @@ export function createPlugin(modules, pluginUrl) {
   }
 
   const hooks = {
+    'before-tool': (payload = {}) => {
+      if (lifecycle.running) return replyGuard.beforeTool(payload);
+    },
     'before-context': async (payload = {}) => {
       const epoch = lifecycle.epoch;
       try {

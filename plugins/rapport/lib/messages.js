@@ -1,4 +1,9 @@
 // 统一解析 QQ Agent 存档及消息条目，不推测用户身份。
+export function isScoreQuery(text) {
+  const plain = String(text || '').replace(/[\s\p{P}\p{S}]/gu, '');
+  return /^(?:请|帮我|查一下|查询|查看|查查|看看|看一下)*(?:我的|我|你的|你对我的|我们之间的)?(?:好感度排行榜|好感度排行|好感排行榜|好感排行|排行榜|好感度|好感)(?:是多少|多少|有多少|几分|是多少分|呢|啊|吗)*$/u.test(plain);
+}
+
 export function createMessages(services) {
   const { firstVal, toMs } = services;
 

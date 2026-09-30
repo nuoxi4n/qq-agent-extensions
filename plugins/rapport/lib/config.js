@@ -1,15 +1,18 @@
 // 配置默认值、校验与聊天覆盖；每次执行时读取最新设置。
+import { roundPoints } from './points.js';
 export function createConfiguration(services) {
   const { clamp, parseThresholds, readConfig, readOverrides } = services;
 
   const DEFAULTS = {
-    perMessage: 1,
-    atBotBonus: 3,
-    dailyCap: 20,
+    perMessage: 0.1,
+    atBotBonus: 0.3,
+    dailyCap: 2,
     decayAfterDays: 7,
-    decayPerDay: 1,
+    decayPerDay: 0.1,
     ownerQq: '',
-    levelThresholds: '50,200,500,1000'
+    levelThresholds: '5,20,50,100',
+    aiMode: false, aiMaxGain: 0.3, aiMaxLoss: 0.3, aiDailyLossCap: 1,
+    aiCooldownSeconds: 30, aiMinScore: -100, aiProtectOwner: true, decayEnabled: true
   };
   const STYLE_DEFAULTS = {
     relationshipStrength: 3,
@@ -19,11 +22,19 @@ export function createConfiguration(services) {
     duplicateWindowMinutes: 10
   };
   const TUNABLE = {
-    perMessage: { type: 'number', min: 0, max: 20, label: '每条发言加分' },
-    atBotBonus: { type: 'number', min: 0, max: 50, label: '@机器人额外加分' },
-    dailyCap: { type: 'number', min: 1, max: 500, label: '每人每天加分上限' },
+    aiMode: { type: 'boolean', label: 'AI 好感度模式' },
+    aiMaxGain: { type: 'number', min: 0.01, max: 10, precision: 2, label: 'AI 单次最多加分' },
+    aiMaxLoss: { type: 'number', min: 0.01, max: 10, precision: 2, label: 'AI 单次最多扣分' },
+    aiDailyLossCap: { type: 'number', min: 0, max: 100, precision: 2, label: 'AI 每人每天扣分上限' },
+    aiCooldownSeconds: { type: 'number', min: 0, max: 3600, label: 'AI 调分间隔（秒）' },
+    aiMinScore: { type: 'number', min: -100, max: 0, precision: 2, label: 'AI 最低好感度' },
+    aiProtectOwner: { type: 'boolean', label: 'AI 模式主人固定满分' },
+    decayEnabled: { type: 'boolean', label: '长期关系淡化' },
+    perMessage: { type: 'number', min: 0, max: 10, precision: 2, label: '每条发言加分' },
+    atBotBonus: { type: 'number', min: 0, max: 10, precision: 2, label: '@机器人额外加分' },
+    dailyCap: { type: 'number', min: 0, max: 100, precision: 2, label: '每人每天加分上限' },
     decayAfterDays: { type: 'number', min: 0, max: 365, label: '多少天不发言开始衰减' },
-    decayPerDay: { type: 'number', min: 0, max: 50, label: '每天衰减多少分' },
+    decayPerDay: { type: 'number', min: 0, max: 10, precision: 2, label: '每天衰减多少分' },
     ownerQq: { type: 'qqList', label: '主人 QQ 号' },
     levelThresholds: { type: 'thresholds', label: '等级门槛' },
     relationshipStrength: { type: 'number', min: 1, max: 3, label: '回复变化强度' },
@@ -38,6 +49,11 @@ export function createConfiguration(services) {
     if (!meta) return { ok: false, error: '未知设置项。' };
     if (!text && ['note','qqList'].includes(meta.type)) return { ok: true, value: '' };
     if (!text) return { ok: false, error: `「${meta.label}」需要一个新值，你没给。` };
+    if (meta.type === 'boolean') {
+      if (['true', '1', '开', '开启'].includes(text.toLowerCase())) return { ok: true, value: true };
+      if (['false', '0', '关', '关闭'].includes(text.toLowerCase())) return { ok: true, value: false };
+      return { ok: false, error: `「${meta.label}」请填写 true/false（开/关）。` };
+    }
 
     if (meta.type === 'note') return { ok: true, value: text.slice(0, 400) };
     if (meta.type === 'style') {
@@ -47,8 +63,8 @@ export function createConfiguration(services) {
     if (meta.type === 'number') {
       const n = (typeof raw === 'number' || typeof raw === 'string') ? Number(text) : NaN;
       if (!Number.isFinite(n)) return { ok: false, error: `「${meta.label}」要填数字，收到的是「${text}」。` };
-      const v = clamp(n, meta.min, meta.max);
-      const note = v !== Math.round(n) ? `（超出范围，已收敛到 ${v}）` : '';
+      const v = meta.precision === 2 ? roundPoints(Math.max(meta.min, Math.min(meta.max, n))) : clamp(n, meta.min, meta.max);
+      const note = v !== n ? `（已按范围和精度调整到 ${v}）` : '';
       return { ok: true, value: v, note };
     }
 
@@ -65,7 +81,7 @@ export function createConfiguration(services) {
     if (meta.type === 'thresholds') {
       const parts = parseThresholds(text);
       return parts ? { ok: true, value: parts.join(',') }
-        : { ok: false, error: '等级门槛须为 4 个严格递增的正整数，不能包含小数或无效项。' };
+        : { ok: false, error: '等级门槛须为 4 个严格递增的正数，最多两位小数，最后一项必须为 100。' };
     }
 
     return { ok: true, value: text };
@@ -105,5 +121,6 @@ export function createConfiguration(services) {
     return out;
   }
 
-  return { currentSettings, coerceValue, formatVal, TUNABLE, STYLE_DEFAULTS };
+  const mechanicalKeys = ['perMessage', 'atBotBonus', 'gainCooldownSeconds', 'duplicateWindowMinutes'];
+  return { currentSettings, coerceValue, formatVal, TUNABLE, STYLE_DEFAULTS, mechanicalKeys };
 }
