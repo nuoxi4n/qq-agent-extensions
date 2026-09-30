@@ -9,15 +9,15 @@ const HINTS = [
   '能配表情的地方尽量配，接梗、调侃、附和时积极使用；没有合适图片仍可不发。'
 ];
 
-export function resolvePolicy(settings = {}, host = null) {
+export function resolvePolicy(settings = {}) {
   const choice = String(settings.intensity ?? '跟随聊天设置');
   // Preserve the old explicit opt-out; host level zero has never meant disabled.
   const legacyOff = choice === '0 · 不主动' || choice === 'off';
   const follows = !legacyOff && !Object.hasOwn(LEVELS, choice) && !/^[0-3]$/.test(choice);
-  const raw = follows ? host?.sticker?.encourage : LEVELS[choice] ?? Number(choice);
+  // API v1 未公开全局设置；跟随模式只提示主模型遵守已有主提示词。
+  const raw = follows ? null : LEVELS[choice] ?? Number(choice);
   const level = raw == null ? null : Math.min(3, Math.max(0, Math.floor(Number(raw) || 0)));
-  const enabled = host?.sticker?.enabled !== false;
-  return { enabled, proactive: enabled && settings.autoReply !== false && !legacyOff, follows, level,
+  return { proactive: settings.autoReply !== false && !legacyOff, follows, level,
     name: level == null ? '跟随宿主策略' : NAMES[level],
     hint: level == null ? '按主系统提示中的表情包积极程度选择，不另设频率。' : HINTS[level] };
 }
@@ -25,22 +25,3 @@ export function resolvePolicy(settings = {}, host = null) {
 export const hasMedia = (session) => (session?.sent || []).some(item => !item.to && ['image', 'sticker', 'video'].includes(item.type));
 export const hasText = (session) => (session?.sent || []).some(item => !item.to && item.type === 'text' && typeof item.text === 'string' && item.text.trim());
 export const stopped = (session) => ['aborted', 'error', 'done', 'noreply'].includes(session?.status);
-
-// QQ Agent v1 exposes only skill-local config. Keep this read-only bridge small;
-// all availability decisions still use the host's single registry implementation.
-export async function connectHost(baseUrl) {
-  try {
-    const config = await import(new URL('../../src/config.js', baseUrl));
-    const registry = await import(new URL('../../src/tool-registry.js', baseUrl));
-    return {
-      config: () => ({ sticker: config.getConfig().sticker }),
-      canUse: (id, ctx = {}) => registry.getToolAvailability(id, {
-        toolsCfg: config.getConfig().tools, visionEnabled: ctx.visionEnabled !== false,
-        searchEnabled: ctx.searchEnabled !== false, runtimeContext: ctx
-      }).enabled
-    };
-  } catch {
-    // Without a readable host switch, fail closed instead of pretending to follow it.
-    return { config: () => null, canUse: () => false };
-  }
-}

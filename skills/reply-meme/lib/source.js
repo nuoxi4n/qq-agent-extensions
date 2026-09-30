@@ -3,7 +3,7 @@ import path from 'node:path';
 import { readBytes, trustedUrl } from './network.js';
 
 export const INDEX_URL = 'https://aigengtu.com/gallery-index.json';
-const MAX_AGE = 24 * 3600000;
+const MAX_AGE = 7 * 24 * 3600000;
 const ROLES = [
   ['DeepSeek娘', 'deepseek', 'deepseek娘', 'ds娘', '鲸鱼娘', '蓝色大肥鱼', '大肥鱼', '深度求索'],
   ['Claude娘', 'claude', 'claude娘'], ['GPT娘', 'gpt', 'gpt娘', 'chatgpt'],
@@ -61,7 +61,7 @@ export function parseIndex(raw) {
 
 export function createSource(httpFetch, directory) {
   const file = path.join(directory, 'gallery-cache.json');
-  let cache = null, pending = null;
+  let cache = null, pending = null, retryAfter = 0;
   try {
     if (fs.statSync(file).size <= 6 * 1024 * 1024) {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -72,8 +72,11 @@ export function createSource(httpFetch, directory) {
   } catch { /* fetch a fresh index */ }
   return {
     peek() { return cache && Date.now() - cache.at < MAX_AGE ? cache.items : []; },
-    async load(cacheMinutes = 15, signal) {
+    async load(cacheMinutes = 1440, signal) {
+      if (signal?.aborted) throw new Error('索引请求已取消');
       if (cache && Date.now() - cache.at < cacheMinutes * 60000) return { ...cache, stale: false };
+      const usableCache = cache && Date.now() - cache.at < MAX_AGE;
+      if (usableCache && (pending || Date.now() < retryAfter)) return { ...cache, stale: true };
       if (pending) return pending;
       pending = (async () => {
         try {
@@ -91,11 +94,18 @@ export function createSource(httpFetch, directory) {
           } catch { /* in-memory cache is enough */ }
           return { ...cache, stale: false };
         } catch (error) {
+          if (signal?.aborted) throw error;
+          retryAfter = Date.now() + 60000;
           if (cache && Date.now() - cache.at < MAX_AGE) return { ...cache, stale: true };
           throw error;
         }
-      })();
-      try { return await pending; } finally { pending = null; }
+      })().finally(() => { pending = null; });
+      if (usableCache) {
+        // 更新索引不占住工具回合；hook 依旧只读取现有缓存。
+        pending.catch(() => {});
+        return { ...cache, stale: true };
+      }
+      return pending;
     }
   };
 }

@@ -1,7 +1,7 @@
 {
   "id": "reply-meme",
   "name": "回复配图·梗鲸表情包",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "nuoxi4n",
   "apiVersion": 1,
   "category": "media",
@@ -18,7 +18,7 @@
     "character": "auto",
     "minShortSide": 160,
     "poolSize": 12,
-    "cacheMinutes": 15,
+    "cacheMinutes": 1440,
     "intensity": "跟随聊天设置"
   },
   "configSchema": {
@@ -75,7 +75,7 @@
     "cacheMinutes": {
       "type": "number",
       "label": "图库索引缓存（分钟）",
-      "description": "默认 15，范围 1~1440。启用时后台预热索引，hook 只读取缓存；网络失败最多使用 24 小时内的旧索引。",
+      "description": "默认 1440（24 小时），范围 1~1440。仅过期或无缓存时请求图库列表；网络失败最多使用 7 天内的旧索引，hook 只读取缓存。",
       "min": 1,
       "max": 1440,
       "step": 1
@@ -83,7 +83,7 @@
     "intensity": {
       "type": "enum",
       "label": "回复配图强度",
-      "description": "跟随聊天设置的频率引导，由主模型判断，不使用固定概率。0 · 不鼓励仍可在非常贴切时使用。",
+      "description": "跟随模式让主模型遵守现有主提示词，不读取全局配置；也可独立选档。不使用固定概率，0 · 不鼓励仍可在非常贴切时使用。",
       "values": [
         "跟随聊天设置",
         "0 · 不鼓励",

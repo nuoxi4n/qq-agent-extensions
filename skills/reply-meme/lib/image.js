@@ -58,14 +58,3 @@ export function saveImage(directory, item) {
   fs.writeFileSync(file, item.buf);
   return file;
 }
-
-export function sweepImages(directory) {
-  const dir = path.join(directory, 'images');
-  try {
-    for (const name of fs.readdirSync(dir)) {
-      if (!/^[a-f0-9]{64}\.(jpg|png|gif|webp)$/.test(name)) continue;
-      const file = path.join(dir, name);
-      try { if (fs.statSync(file).mtimeMs < Date.now() - 48 * 3600000) fs.unlinkSync(file); } catch { /* best effort */ }
-    }
-  } catch { /* no cache yet */ }
-}
