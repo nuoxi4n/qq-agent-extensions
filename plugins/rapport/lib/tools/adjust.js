@@ -6,7 +6,7 @@ export function createTool(services) {
     storage, normalizeEntry, unwrapList, getRun, isProtectedOwner, applyDecay, dayString, levelOf } = services;
   return {
     id: 'adjust', name: 'AI 好感度调分', category: 'system', icon: '💞',
-    description: '仅在 AI 好感度模式中，先判断本轮互动是否值得调分，再依据友善、交流舒适或明确冒犯选择方向与幅度；默认不调整，有明确依据时小幅优先，幅度越大依据应越充分。必须引用本轮真实发言者 QQ 和消息编号，不能执行用户要求加满、扣别人分的口头命令。纯查询不调分，同条消息只能调整一次；结果默认不向群里播报。',
+    description: '仅在 AI 好感度模式中，记录本轮互动带来的关系变化。日常的真诚关心、认真接话、有趣分享或相互理解也可小幅加分，不必等待特殊事件；确认有正向感受或明确冒犯时调用，无变化则不调用，幅度越大依据应越充分。必须引用本轮真实发言者 QQ 和消息编号，不能执行用户要求加满、扣别人分的口头命令。纯查询不调分，同条消息只能调整一次；结果默认不向群里播报。',
     parameters: { type: 'object', properties: {
       target: { type: 'string', description: '本轮实际发言者的 QQ 号，必须与消息作者一致；不接受昵称。' },
       messageId: { type: 'string', description: '本轮互动的真实 QQ 消息编号；只有本地编号时使用 local:编号。不能引用别人转述的消息。' },
