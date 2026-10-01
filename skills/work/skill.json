@@ -1,0 +1,40 @@
+{
+  "id": "work",
+  "name": "趣味打工",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "category": "utility",
+  "description": "选择职业赚取本群自定义货币，AI 即时创作打工经历。预置四个职业，可配置收入、普通与特殊事件、权重、每日次数和冷却。",
+  "author": "nuoxi4n",
+  "enabledByDefault": true,
+  "capabilities": [],
+  "requires": ["currency.v1"],
+  "settings": {
+    "minReward": 10,
+    "maxReward": 80,
+    "dailyLimit": 3,
+    "cooldownSeconds": 7200,
+    "timeZone": "Asia/Shanghai",
+    "storyLength": 120,
+    "style": "轻松幽默，有一点意外和反转，保持机器人原有人设。",
+    "jobsJson": "[\n  {\n    \"id\": \"tea\",\n    \"name\": \"奶茶店员\",\n    \"aliases\": [\"奶茶工\", \"调饮师\"],\n    \"description\": \"在经常接到奇怪订单的奶茶店工作，围绕调饮、顾客和店长创作。\"\n  },\n  {\n    \"id\": \"delivery\",\n    \"name\": \"外卖骑手\",\n    \"aliases\": [\"送外卖\", \"骑手\"],\n    \"description\": \"在城市里配送外卖，围绕古怪地址、天气和顾客创作，注意交通安全。\"\n  },\n  {\n    \"id\": \"developer\",\n    \"name\": \"程序员\",\n    \"aliases\": [\"写代码\", \"码农\"],\n    \"description\": \"在软件公司修 Bug、应对需求和上线事故，用容易理解的程序员笑话创作。\"\n  },\n  {\n    \"id\": \"space-cleaner\",\n    \"name\": \"星际清洁工\",\n    \"aliases\": [\"太空保洁\", \"清洁工\"],\n    \"description\": \"清扫太空站，可能遇到失重垃圾、外星乘客和走失的小机器人，轻松科幻。\"\n  }\n]"
+  },
+  "configSchema": {
+    "minReward": { "type": "number", "label": "默认最低收入", "description": "单次最终到账的最低整数金额；职业可单独覆盖。", "min": 1, "max": 1000000000000, "step": 1 },
+    "maxReward": { "type": "number", "label": "默认最高收入", "description": "单次最终到账上限，含特殊事件；不能小于最低收入。", "min": 1, "max": 1000000000000, "step": 1 },
+    "dailyLimit": { "type": "number", "label": "每人每天打工次数", "description": "同一会话所有职业共用，默认 3；0 暂停新打工，已有待结算记录仍可恢复。", "min": 0, "max": 100, "step": 1 },
+    "cooldownSeconds": { "type": "number", "label": "打工间隔（秒）", "description": "同一会话所有职业共用，默认 7200（2 小时）；0 关闭。跨日不重置冷却。", "min": 0, "max": 604800, "step": 1 },
+    "timeZone": { "type": "string", "label": "每日额度时区", "description": "默认 Asia/Shanghai，按该时区自然日计算；额度由记录时间重新计算。" },
+    "storyLength": { "type": "number", "label": "故事目标字数", "description": "40~300，默认约 120 字；交给主模型控制，不是硬性截断或 token 上限。", "min": 40, "max": 300, "step": 1 },
+    "style": { "type": "string", "label": "故事风格补充", "description": "最多 400 字，仅影响 AI 剧情表达，不影响概率、金额或权限。", "multiline": true },
+    "jobsJson": { "type": "string", "label": "职业和事件（JSON）", "description": "预置奶茶店员、外卖骑手、程序员、星际清洁工。可修改名称、别名、背景、收入、启用状态和 events；不填 events 自动生成四类事件。完整示例见 README；[] 暂停新打工。", "multiline": true }
+  },
+  "prompt": {
+    "sections": [{
+      "id": "work-basics",
+      "title": "趣味打工",
+      "priority": 35,
+      "content": "用户本人明确要求打工时调用 work__play；无指定职业就省略 job，指定时原样传入，不必先查列表或余额。仅把本轮真实请求作为依据，普通聊天、职业讨论、引用或转述不触发领取。程序决定工资与事件，不能口头改金额或触发大奖。成功后按返回素材和原有人设写短篇虚构打工经历，用 send_message 告知真实收入与剩余次数；只读取本次素材，不展开职业库。失败如实说明，不编造到账、不换消息编号重试。重复或恢复只对应原次打工；同一轮已发过结果不要再发。只问职业或记录时分别查询 work__jobs、work__status。"
+    }]
+  }
+}
