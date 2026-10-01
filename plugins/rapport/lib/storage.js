@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { validPoints } from './points.js';
 import { validateEvents } from './events.js';
 import { migrateEvents } from './migrations.js';
+import { createFileLock } from './file-lock.js';
 
 export function createStorage(services) {
   const { pluginUrl, dayString, isObject, warn } = services;
@@ -17,16 +18,7 @@ export function createStorage(services) {
   let writeError = '';
   let dirty = false;
   const instanceId = randomUUID();
-  let lockFile = '', lockToken = '';
-  function unlock() {
-    if (lockToken) { try { if (fs.readFileSync(lockFile, 'utf8') === lockToken) fs.unlinkSync(lockFile); } catch {} }
-    lockToken = '';
-  }
-  function assertLock() {
-    let actual;
-    try { actual = fs.readFileSync(lockFile, 'utf8'); } catch { /* 丢失锁时禁止写入。 */ }
-    if (!lockToken || actual !== lockToken) throw new Error('好感度数据锁丢失，停止写入。');
-  }
+  const lock = createFileLock({ label: '好感度数据', beforeExit: flush });
 
   function dataFilePath() {
     if (dbFile) return dbFile;
@@ -78,17 +70,14 @@ export function createStorage(services) {
     if (loaded && db) return db;
     const file = dataFilePath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    lockFile = `${file}.lock`;
-    const token = JSON.stringify({ pid: process.pid, token: instanceId });
-    try { fs.writeFileSync(lockFile, token, { encoding: 'utf8', flag: 'wx' }); lockToken = token; }
-    catch (error) { throw new Error(error.code === 'EEXIST' ? '好感度数据被占用或有遗留 rapport.json.lock；确认没有实例使用后再移除锁。' : error.message); }
+    lock.acquire(`${file}.lock`);
     let parsed = { pluginId: 'rapport', version: 2, meta: {}, chats: {} };
     try {
       parsed = JSON.parse(fs.readFileSync(dataFilePath(), 'utf8').replace(/^\uFEFF/, ''));
       validateDatabase(parsed);
     } catch (error) {
       if (error.code !== 'ENOENT') {
-        unlock();
+        lock.release();
         dataError = `读取好感度数据失败，已停止写入以保护原文件：${error.message}`;
         throw new Error(dataError);
       }
@@ -133,7 +122,7 @@ export function createStorage(services) {
     const tmp = `${file}.${process.pid}.${instanceId}.tmp`;
     let fd;
     try {
-      assertLock();
+      lock.assertOwned();
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(tmp, JSON.stringify(db), 'utf8');
       fd = fs.openSync(tmp, 'r+');
@@ -160,7 +149,7 @@ export function createStorage(services) {
   // 只包裹无 await 的修改段，避免回滚覆盖其他会话在等待期间完成的写入。
   function transaction(change) {
     ensureLoaded();
-    assertLock();
+    lock.assertOwned();
     const snapshot = structuredClone(db);
     const wasDirty = dirty;
     try {
@@ -177,7 +166,7 @@ export function createStorage(services) {
   }
 
   function reset() {
-    unlock();
+    lock.release();
     db = null;
     loaded = false;
     dataError = '';

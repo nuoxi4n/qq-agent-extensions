@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { emptyState, restore, prepare, commit } from './ledger.js';
 import { fail } from './validation.js';
+import { createFileLock } from './file-lock.js';
 
 export function defaultDataDirectory(pluginUrl, env = process.env) {
   if (env.QQ_AGENT_DATA_DIR) return path.resolve(env.QQ_AGENT_DATA_DIR);
@@ -13,24 +14,17 @@ export function defaultDataDirectory(pluginUrl, env = process.env) {
 }
 
 export function createStorage({ directory, io = fs, now = Date.now }) {
-  let state = null, file, lockFile, lockToken;
+  let state = null, file;
   let reason = '';
+  const lock = createFileLock({ io, label: '货币数据' });
 
   function open() {
     if (state) return;
     const dir = typeof directory === 'function' ? directory() : directory;
     io.mkdirSync(dir, { recursive: true });
     file = path.join(io.realpathSync(dir), 'currency.json');
-    lockFile = `${file}.lock`;
-    const token = JSON.stringify({ pid: process.pid, token: randomUUID() });
     try {
-      // 不猜测旧锁是否失效；进程异常退出后由维护者核实并移除，防止双进程同时恢复。
-      try { io.writeFileSync(lockFile, token, { encoding: 'utf8', flag: 'wx' }); }
-      catch (error) {
-        if (error.code === 'EEXIST') fail('STORAGE_LOCKED', '货币数据正被占用或遗留了锁；确认没有实例使用后移除 currency.json.lock 再启用。');
-        throw error;
-      }
-      lockToken = token;
+      lock.acquire(`${file}.lock`);
       let parsed;
       try { parsed = JSON.parse(io.readFileSync(file, 'utf8')); }
       catch (error) { if (error.code !== 'ENOENT') fail('CORRUPT_DATA', `无法读取货币数据：${error.message}`); }
@@ -50,7 +44,7 @@ export function createStorage({ directory, io = fs, now = Date.now }) {
     const temp = `${file}.${randomUUID()}.tmp`;
     let fd;
     try {
-      if (io.readFileSync(lockFile, 'utf8') !== lockToken) fail('STORAGE_LOCKED', '货币数据写锁已改变，停止写入。');
+      lock.assertOwned();
       const document = { pluginId: 'currency', version: 1, transactions: [...state.receipts, result.receipt] };
       fd = io.openSync(temp, 'wx');
       io.writeFileSync(fd, JSON.stringify(document), 'utf8');
@@ -71,10 +65,7 @@ export function createStorage({ directory, io = fs, now = Date.now }) {
 
   function close() {
     state = null;
-    if (lockToken) {
-      try { if (io.readFileSync(lockFile, 'utf8') === lockToken) io.unlinkSync(lockFile); } catch {}
-    }
-    lockToken = null;
+    lock.release();
   }
 
   return { open, close, transact, get state() { return state; }, get reason() { return reason; } };

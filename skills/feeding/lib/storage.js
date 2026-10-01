@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { fail, isObject, integer, text, gain, MAX_AMOUNT } from './config.js';
+import { createFileLock } from './file-lock.js';
 
 export const eventId = (scope, userId, messageId) => createHash('sha256').update(JSON.stringify([scope, userId, messageId])).digest('hex');
 export function defaultDataDirectory(pluginUrl, env = process.env) {
@@ -37,22 +38,19 @@ function restore(data) {
   } catch (error) { fail('CORRUPT_DATA', `投喂数据校验失败：${error.message}。保留原文件，停止写入。`); }
 }
 export function createStorage({ directory, io = fs }) {
-  let records = null, file, lockFile, lockToken;
+  let records = null, file;
+  const lock = createFileLock({ io, label: '投喂数据' });
   function close() {
     records = null;
-    if (lockToken) { try { if (io.readFileSync(lockFile, 'utf8') === lockToken) io.unlinkSync(lockFile); } catch {} }
-    lockToken = null;
+    lock.release();
   }
   function open() {
     if (records) return;
     const dir = typeof directory === 'function' ? directory() : directory;
     io.mkdirSync(dir, { recursive: true });
-    file = path.join(io.realpathSync(dir), 'feeding.json'); lockFile = `${file}.lock`;
-    const token = JSON.stringify({ pid: process.pid, token: randomUUID() });
+    file = path.join(io.realpathSync(dir), 'feeding.json');
     try {
-      try { io.writeFileSync(lockFile, token, { encoding: 'utf8', flag: 'wx' }); }
-      catch (error) { if (error.code === 'EEXIST') fail('STORAGE_LOCKED', '投喂数据被占用或有遗留 feeding.json.lock；确认没有实例使用后再移除锁。'); throw error; }
-      lockToken = token;
+      lock.acquire(`${file}.lock`);
       let data;
       try { data = JSON.parse(io.readFileSync(file, 'utf8')); }
       catch (error) { if (error.code !== 'ENOENT') fail('CORRUPT_DATA', `无法读取投喂数据：${error.message}`); }
@@ -60,9 +58,8 @@ export function createStorage({ directory, io = fs }) {
     } catch (error) { close(); throw error; }
   }
   function assertWritable() {
-    let token;
-    try { token = io.readFileSync(lockFile, 'utf8'); } catch { /* 丢失锁时停止交易。 */ }
-    if (!records || !lockToken || token !== lockToken) fail('STORAGE_LOCKED', '投喂数据锁已变化或不可读取，停止结算。');
+    if (!records) fail('STORAGE_LOCKED', '投喂数据尚未加载，停止结算。');
+    lock.assertOwned();
   }
   function save(next) {
     const temp = `${file}.${randomUUID()}.tmp`;

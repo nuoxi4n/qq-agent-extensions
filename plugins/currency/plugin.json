@@ -1,7 +1,7 @@
 {
   "id": "currency",
   "name": "货币系统",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 1,
   "category": "utility",
   "description": "让每个群拥有自己的金币钱包，支持余额查询、转账、收支记录和交易处理。为签到奖励、道具商店和小游戏提供统一货币接口，插件与技能均可接入。",

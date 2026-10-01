@@ -301,7 +301,7 @@ test('存档损坏停止写入保留原文件，不把读错数据当新用户',
 test('独占锁阻止多实例写入；锁更换后不删除他人的锁', t => {
   const f = fixture(t);
   const second = createWorkPlugin({ directory: f.directory }); second.setup({ config: () => DEFAULTS, registerTool() {} });
-  assert.throws(() => second.activate(), /遗留 work.json.lock/); second.dispose();
+  assert.throws(() => second.activate(), /work.json.lock.*占用/); second.dispose();
   assert.equal(fs.existsSync(path.join(f.directory, 'work.json.lock')), true);
   const lock = path.join(f.directory, 'work.json.lock'); fs.writeFileSync(lock, 'another-instance');
   bad(f.play(), 'STORAGE_LOCKED'); assert.equal(f.balance(), 0);

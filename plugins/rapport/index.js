@@ -1,4 +1,4 @@
-/** 好感度养成（rapport）v1.2.0 · nuoxi4n */
+/** 好感度养成（rapport）v1.2.1 · nuoxi4n */
 
 import * as utils from './lib/utils.js';
 import * as levels from './lib/levels.js';

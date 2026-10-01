@@ -1,7 +1,7 @@
 {
   "id": "feeding",
   "name": "趣味投喂",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 1,
   "category": "utility",
   "description": "花费本群自定义货币购买食物并投喂机器人，AI 按人设自然回应。普通模式固定加好感，AI 模式由模型评分。前置：货币系统 currency ≥1.0.0、好感度养成 rapport ≥1.2.0，均须启用，并分别配置货币与好感度插件的接入权限。",

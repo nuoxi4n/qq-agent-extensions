@@ -1,7 +1,7 @@
 {
   "id": "work",
   "name": "趣味打工",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 1,
   "category": "utility",
   "description": "选择职业赚取本群自定义货币，AI 即时创作打工经历。预置四个职业，可配置收入、普通与特殊事件、权重、每日次数和冷却。",
