@@ -1,11 +1,11 @@
-// 仅保护本轮使用过 rapport 工具的回复；使用公开钩子和 session.sent，不接管发送。
+// 保护本轮使用过关系或授权扩展工具的回复；使用公开钩子和 session.sent，不接管发送。
 import { replyTexts } from './reply-text.js';
-export function createReplyGuard() {
+export function createReplyGuard({ isExternalTool = () => false } = {}) {
   let sessions = new WeakSet();
 
   function beforeTool({ toolName, argsRaw, session } = {}) {
     if (!session || typeof session !== 'object') return;
-    if (['rapport__check', 'rapport__rank', 'rapport__adjust', 'rapport__tune', 'rapport__reset'].includes(toolName)) {
+    if (['rapport__check', 'rapport__rank', 'rapport__adjust', 'rapport__tune', 'rapport__reset'].includes(toolName) || isExternalTool(toolName)) {
       sessions.add(session);
       return;
     }

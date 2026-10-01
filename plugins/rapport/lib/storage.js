@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { validPoints } from './points.js';
+import { validateEvents } from './events.js';
+import { migrateEvents } from './migrations.js';
 
 export function createStorage(services) {
   const { pluginUrl, dayString, isObject, warn } = services;
@@ -15,10 +17,21 @@ export function createStorage(services) {
   let writeError = '';
   let dirty = false;
   const instanceId = randomUUID();
+  let lockFile = '', lockToken = '';
+  function unlock() {
+    if (lockToken) { try { if (fs.readFileSync(lockFile, 'utf8') === lockToken) fs.unlinkSync(lockFile); } catch {} }
+    lockToken = '';
+  }
+  function assertLock() {
+    let actual;
+    try { actual = fs.readFileSync(lockFile, 'utf8'); } catch { /* 丢失锁时禁止写入。 */ }
+    if (!lockToken || actual !== lockToken) throw new Error('好感度数据锁丢失，停止写入。');
+  }
 
   function dataFilePath() {
     if (dbFile) return dbFile;
-    const dir = process.env.QQ_AGENT_DATA_DIR || fileURLToPath(new URL('../../data/', pluginUrl));
+    const profile = (process.env.QQ_AGENT_PROFILE || '').trim();
+    const dir = process.env.QQ_AGENT_DATA_DIR || fileURLToPath(new URL(`../../data${/^\d+$/.test(profile) ? `-${profile}` : ''}/`, pluginUrl));
     // 百分制直接使用原文件名；旧格式不迁移，升级时由维护操作清理。
     dbFile = path.join(dir, 'rapport.json');
     return dbFile;
@@ -27,6 +40,8 @@ export function createStorage(services) {
   function validateDatabase(parsed) {
     const bad = () => { throw new Error('好感度养成数据格式不匹配或已损坏（仅接受 rapport 的 version=2 百分制数据）'); };
     if (!isObject(parsed) || parsed.pluginId !== 'rapport' || parsed.version !== 2 || !isObject(parsed.chats)) bad();
+    migrateEvents(parsed);
+    validateEvents(parsed.integrationEvents);
     if (parsed.meta !== undefined && !isObject(parsed.meta)) bad();
     if (parsed.meta?.overrides !== undefined && !isObject(parsed.meta.overrides)) bad();
     if (parsed.meta?.scoringMode !== undefined) {
@@ -61,12 +76,19 @@ export function createStorage(services) {
 
   function ensureLoaded() {
     if (loaded && db) return db;
+    const file = dataFilePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    lockFile = `${file}.lock`;
+    const token = JSON.stringify({ pid: process.pid, token: instanceId });
+    try { fs.writeFileSync(lockFile, token, { encoding: 'utf8', flag: 'wx' }); lockToken = token; }
+    catch (error) { throw new Error(error.code === 'EEXIST' ? '好感度数据被占用或有遗留 rapport.json.lock；确认没有实例使用后再移除锁。' : error.message); }
     let parsed = { pluginId: 'rapport', version: 2, meta: {}, chats: {} };
     try {
       parsed = JSON.parse(fs.readFileSync(dataFilePath(), 'utf8').replace(/^\uFEFF/, ''));
       validateDatabase(parsed);
     } catch (error) {
       if (error.code !== 'ENOENT') {
+        unlock();
         dataError = `读取好感度数据失败，已停止写入以保护原文件：${error.message}`;
         throw new Error(dataError);
       }
@@ -109,9 +131,14 @@ export function createStorage(services) {
     if (!dirty || !db || dataError) return;
     const file = dataFilePath();
     const tmp = `${file}.${process.pid}.${instanceId}.tmp`;
+    let fd;
     try {
+      assertLock();
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(tmp, JSON.stringify(db), 'utf8');
+      fd = fs.openSync(tmp, 'r+');
+      fs.fsyncSync(fd);
+      fs.closeSync(fd); fd = undefined;
       fs.renameSync(tmp, file);
       dirty = false;
       writeError = '';
@@ -120,6 +147,7 @@ export function createStorage(services) {
       warn(writeError);
       throw error;
     } finally {
+      if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
       try { fs.unlinkSync(tmp); } catch {}
     }
   }
@@ -132,6 +160,7 @@ export function createStorage(services) {
   // 只包裹无 await 的修改段，避免回滚覆盖其他会话在等待期间完成的写入。
   function transaction(change) {
     ensureLoaded();
+    assertLock();
     const snapshot = structuredClone(db);
     const wasDirty = dirty;
     try {
@@ -148,6 +177,7 @@ export function createStorage(services) {
   }
 
   function reset() {
+    unlock();
     db = null;
     loaded = false;
     dataError = '';

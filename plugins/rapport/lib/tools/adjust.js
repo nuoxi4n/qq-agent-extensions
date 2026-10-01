@@ -55,6 +55,7 @@ export function createTool(services) {
           if (rec.dayKey && rec.dayKey > today) throw new Error('系统日期早于已记账日期，暂停调分。');
           if (rec.dayKey !== today) { rec.dayKey = today; rec.dayGain = 0; rec.dayLoss = 0; rec.aiRated = []; }
           const eventKey = `${target}:${messageId}`;
+          if (services.eventClaimed?.(chatKey, target, messageId)) throw new Error('该互动属于已登记的外部事件，请通过来源扩展评分，不能再按日常互动重复加减。');
           if (!chat.aiEligible?.some(item => item.key === eventKey)) throw new Error('这条互动未在 AI 模式中记录，不能补算或重复机械奖励。');
           if ((rec.aiRated || []).includes(eventKey)) throw new Error('这条互动已经评过分，不能重复加减。');
           if (rec.lastAiAt && now - rec.lastAiAt < s.aiCooldownSeconds * 1000) throw new Error('该成员仍在 AI 调分间隔内，本次未调整。');

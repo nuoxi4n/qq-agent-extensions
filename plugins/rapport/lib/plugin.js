@@ -3,8 +3,8 @@ import { createReplyGuard } from './reply-guard.js';
 export function createPlugin(modules, pluginUrl) {
   let api = null;
   let flushTimer = null;
+  let activationError = '';
   const lifecycle = { running: false, epoch: 0 };
-  const replyGuard = createReplyGuard();
   const log = (...args) => api?.log?.(...args);
   const warn = (...args) => api?.warn?.(...args);
   const utils = modules.utils;
@@ -20,16 +20,20 @@ export function createPlugin(modules, pluginUrl) {
     ...utils, ...levels, ...configuration, ...messages,
     ensureLoaded: storage.ensureLoaded, getChat: storage.getChat,
     newRecord: storage.newRecord, markDirty: storage.markDirty, flush: storage.flush,
-    storage, lifecycle, log, warn, assertRunning
+    storage, lifecycle, log, warn, assertRunning,
+    readIntegrationPermissions: () => api?.config?.()?.integrationPermissions ?? '{}'
   };
   const scoring = modules.scoring.createScoring(services);
   Object.assign(services, scoring);
+  const events = modules.events.createEvents(services);
+  const replyGuard = createReplyGuard({ isExternalTool: events.ownsTool });
+  Object.assign(services, { eventClaimed: events.claimed });
   const relationship = modules.relationship.createRelationship(services);
   Object.assign(services, { getRun: relationship.getRun });
   Object.assign(services, modules.context.createToolContext(services));
 
   function assertRunning(epoch) {
-    if (!lifecycle.running || epoch !== lifecycle.epoch) {
+    if (!lifecycle.running || epoch !== lifecycle.epoch || api?.isSkillActive?.('rapport') === false) {
       const error = new Error('插件已停用或重新加载，本次操作已取消。');
       error.code = 'rapport-cancelled';
       throw error;
@@ -45,7 +49,9 @@ export function createPlugin(modules, pluginUrl) {
     log('好感度养成已加载');
   }
 
-  async function activate() {
+  // 初始化只有同步 IO；同步抛错才能被宿主的生命周期 try/catch 接住。
+  function activate() {
+    if (lifecycle.running) return;
     lifecycle.epoch += 1;
     lifecycle.running = true;
     try {
@@ -54,12 +60,15 @@ export function createPlugin(modules, pluginUrl) {
       scoring.syncOwners();
       storage.markDirty();
       storage.flush();
+      activationError = '';
       if (flushTimer) clearInterval(flushTimer);
       flushTimer = setInterval(() => { try { storage.flush(); } catch {} }, 30000);
       flushTimer.unref?.();
       log('好感度养成已启用');
     } catch (error) {
       lifecycle.running = false;
+      activationError = error.message;
+      storage.reset();
       throw error;
     }
   }
@@ -71,7 +80,7 @@ export function createPlugin(modules, pluginUrl) {
     flushTimer = null;
     relationship.clear();
     replyGuard.clear();
-    storage.flush();
+    try { storage.flush(); } finally { storage.reset(); }
   }
 
   function dispose() {
@@ -99,7 +108,9 @@ export function createPlugin(modules, pluginUrl) {
   };
 
   return {
-    setup, activate, deactivate, dispose, available: storage.available, hooks,
+    setup, activate, deactivate, dispose,
+    available: () => activationError ? { ok: false, reason: activationError } : storage.available() !== true ? storage.available() : events.available(), hooks,
+    providers: { 'rapport.v1': args => api?.isSkillActive?.('rapport') === false ? undefined : events.provider(args) },
     promptSections: relationship.promptSections, relationshipText: relationship.relationshipText,
     normalizeEntry: messages.normalizeEntry, findMember: services.findMember,
     applyDecay: levels.applyDecay, ownerList: levels.ownerList,

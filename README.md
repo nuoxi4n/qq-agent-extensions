@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | Skill | `reply-meme` | 回复配图·梗鲸表情包 | [结合聊天上下文选择和发送表情包](skills/reply-meme/README.md) |
 | Skill | `ai-image` | AI生图 | [文生图和图生图，并将结果发送到群聊或私聊](skills/ai-image/README.md) |
-| Plugin | `rapport` | 好感度养成 | [普通计分、AI 按互动加减好感、关系表达、查询与排行](plugins/rapport/README.md) |
+| Plugin | `rapport` | 好感度养成 | [普通计分、AI 好感度、关系表达、查询排行与通用事件 API](plugins/rapport/README.md) |
 | Plugin | `currency` | 货币系统 | [按群独立账户、幂等收支、转账、预扣/结算/退款，以及供扩展接入的 currency.v1 API](plugins/currency/README.md) |
 | Skill | `work` | 趣味打工 | [四个默认职业、自定义普通／特殊事件、AI 短篇经历和货币奖励，支持次数、冷却与结算恢复](skills/work/README.md) |
 

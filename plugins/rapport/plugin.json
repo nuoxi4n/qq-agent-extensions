@@ -1,13 +1,15 @@
 {
   "id": "rapport",
   "name": "好感度养成",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "apiVersion": 1,
   "category": "message",
   "description": "支持普通计分与 AI 好感度模式：AI 结合真实聊天互动、角色性格和语境自主加分、扣分或保持不变，记录调分理由；关系等级每轮影响称呼、语气、关心和接话。支持 0.01 分精度、查询排行、额度限制、防刷分与长期关系淡化。",
   "author": "nuoxi4n",
   "enabledByDefault": true,
-  "capabilities": [],
+  "capabilities": [
+    "rapport.v1"
+  ],
   "requires": [],
   "settings": {
     "relationshipStrength": 3,
@@ -29,7 +31,8 @@
     "aiCooldownSeconds": 30,
     "aiMinScore": -100,
     "aiProtectOwner": true,
-    "decayEnabled": true
+    "decayEnabled": true,
+    "integrationPermissions": "{}"
   },
   "configSchema": {
     "relationshipStrength": {
@@ -190,6 +193,12 @@
       "type": "boolean",
       "label": "长期关系淡化",
       "description": "普通和 AI 模式共用，默认开启。超过未互动宽限期后，正分减少、负分回升，逐渐靠近零；关闭期间不补算。不会删除聊天记忆。"
+    },
+    "integrationPermissions": {
+      "type": "string",
+      "label": "扩展接入权限",
+      "description": "JSON 对象，默认不授权写入。按扩展 ID 授予 recordEvent、rateEvent、bindMessage；允许扣分须另授 decrease。投喂示例：{\"feeding\":[\"recordEvent\",\"rateEvent\",\"bindMessage\"]}。只安装受信任的扩展。",
+      "multiline": true
     }
   },
   "prompt": {
