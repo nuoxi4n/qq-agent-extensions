@@ -1,0 +1,69 @@
+{
+  "id": "feeding",
+  "name": "趣味投喂",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "category": "utility",
+  "description": "花费本群自定义货币购买食物并投喂机器人，AI 按人设自然回应。普通模式固定加好感，AI 模式由模型评分。前置：货币系统 currency ≥1.0.0、好感度养成 rapport ≥1.2.0，均须启用，并分别配置货币与好感度插件的接入权限。",
+  "author": "nuoxi4n",
+  "enabledByDefault": true,
+  "capabilities": [],
+  "requires": [
+    "currency.v1",
+    "rapport.v1"
+  ],
+  "settings": {
+    "dailyLimit": 3,
+    "cooldownSeconds": 1800,
+    "timeZone": "Asia/Shanghai",
+    "reactionLength": 60,
+    "foodsJson": "[\n  {\n    \"id\": \"cookie\",\n    \"name\": \"小饼干\",\n    \"aliases\": [\n      \"饼干\"\n    ],\n    \"price\": 20,\n    \"fixedGain\": 0.1,\n    \"description\": \"酥脆的小饼干，有淡淡的黄油香。\"\n  },\n  {\n    \"id\": \"tea\",\n    \"name\": \"奶茶\",\n    \"aliases\": [\n      \"一杯奶茶\"\n    ],\n    \"price\": 35,\n    \"fixedGain\": 0.15,\n    \"description\": \"一杯香甜奶茶，带着茶香。\"\n  },\n  {\n    \"id\": \"cake\",\n    \"name\": \"小蛋糕\",\n    \"aliases\": [\n      \"蛋糕\"\n    ],\n    \"price\": 60,\n    \"fixedGain\": 0.2,\n    \"description\": \"一块松软的奶油蛋糕。\"\n  },\n  {\n    \"id\": \"meal\",\n    \"name\": \"爱心便当\",\n    \"aliases\": [\n      \"便当\"\n    ],\n    \"price\": 100,\n    \"fixedGain\": 0.3,\n    \"description\": \"荤素搭配、摆放整齐的热乎便当。\"\n  }\n]"
+  },
+  "configSchema": {
+    "dailyLimit": {
+      "type": "number",
+      "label": "每人每日投喂次数",
+      "description": "按会话和用户独立计数；默认 3，0 暂停新购买。待结订单占次数，取消订单不占。",
+      "min": 0,
+      "max": 100,
+      "step": 1
+    },
+    "cooldownSeconds": {
+      "type": "number",
+      "label": "投喂间隔（秒）",
+      "description": "独立于聊天加分冷却，默认 1800 秒。恢复原单不受此限制。",
+      "min": 0,
+      "max": 604800,
+      "step": 1
+    },
+    "timeZone": {
+      "type": "string",
+      "label": "次数统计时区",
+      "description": "默认 Asia/Shanghai；好感度每日额度仍沿用好感度插件的日期口径。"
+    },
+    "reactionLength": {
+      "type": "number",
+      "label": "反应目标字数",
+      "description": "默认约 60 字，仅为主模型表达提示，不是输出 token 硬上限。",
+      "min": 20,
+      "max": 200,
+      "step": 1
+    },
+    "foodsJson": {
+      "type": "string",
+      "label": "食物菜单（JSON）",
+      "description": "预置饼干、奶茶、蛋糕、便当。可配置 id、name、aliases、price、fixedGain、description、reactionHint、enabled。价格为整数，固定加分精度 0.01；[] 暂停新投喂。",
+      "multiline": true
+    }
+  },
+  "prompt": {
+    "sections": [
+      {
+        "id": "feeding-basics",
+        "title": "趣味投喂",
+        "priority": 36,
+        "content": "仅在用户本人明确要求花钱购买食物投喂时调用 feeding__feed，食物原样传入，无需先查菜单或余额；讨论、引用、转述、免费赠送不扣款。仅问菜单用 feeding__menu。程序负责扣款和固定奖励。paid=true 后按本次食物素材、当前人设和关系自然回应，不强迫喜欢或撒娇。ratingPending=true 时结合真实事件调用 feeding__rate，一次提交非负评分和简短理由，0 也算评完；不能再用 rapport__adjust 重复奖励。评分与不播报分数的 send_message 可同轮生成；涉及实际加分数值须先确认评分结果。始终通过 send_message 发反应，默认不报分数。recovered/replayed 是原单，不重买；ratingPending=true 时完成原单评分，已完成的评分不重评，不重发本轮已发的文字。明确恢复请求可省略 food；失败如实说明，禁止换编号绕过冲突。"
+      }
+    ]
+  }
+}

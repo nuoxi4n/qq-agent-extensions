@@ -11,6 +11,7 @@
 | Plugin | `rapport` | 好感度养成 | [普通计分、AI 好感度、关系表达、查询排行与通用事件 API](plugins/rapport/README.md) |
 | Plugin | `currency` | 货币系统 | [按群独立账户、幂等收支、转账、预扣/结算/退款，以及供扩展接入的 currency.v1 API](plugins/currency/README.md) |
 | Skill | `work` | 趣味打工 | [四个默认职业、自定义普通／特殊事件、AI 短篇经历和货币奖励，支持次数、冷却与结算恢复](skills/work/README.md) |
+| Skill | `feeding` | 趣味投喂 | [购买食物、AI 人设反应、固定或 AI 好感度评分；前置 currency ≥1.0.0、rapport ≥1.2.0](skills/feeding/README.md) |
 
 ## 目录约定
 
