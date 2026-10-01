@@ -4,7 +4,7 @@
   "version": "1.1.0",
   "apiVersion": 1,
   "category": "message",
-  "description": "独立的关系养成系统：每轮按说话人的关系等级调整称呼、语气、关心和接话，高好感有明显回复变化；含防刷分、查询和排行。",
+  "description": "支持普通计分与 AI 好感度模式：AI 结合真实聊天互动、角色性格和语境自主加分、扣分或保持不变，记录调分理由；关系等级每轮影响称呼、语气、关心和接话。支持 0.01 分精度、查询排行、额度限制、防刷分与长期关系淡化。",
   "author": "nuoxi4n",
   "enabledByDefault": true,
   "capabilities": [],
