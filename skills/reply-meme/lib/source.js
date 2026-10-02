@@ -1,3 +1,6 @@
+import { clean, knownMoodWords, moodWords, occurrences, isNegated, matches } from './text.js';
+import { selectionInfo, meaningfulText } from './metadata.js';
+export { isAffirmedPhrase } from './text.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readBytes, trustedUrl } from './network.js';
@@ -11,28 +14,21 @@ const ROLES = [
   ['通义千问娘', '通义千问', '通义', '千问', 'qwen'], ['智谱清言娘', '智谱清言', '智谱', 'glm'],
   ['Gemini娘', 'gemini', 'gemini娘'], ['Grok娘', 'grok', 'grok娘'], ['AI娘化', 'ai娘化']
 ];
-const MOODS = {
-  难过: ['难过', '不开心', '伤心', '委屈', '哭哭', '哭泣', '落泪', '呜呜'],
-  开心: ['开心', '快乐', '高兴', '好耶', '欢呼', '庆祝'],
-  感谢: ['感谢', '谢谢', '多谢', '感激', '谢啦'],
-  赞同: ['赞同', '收到', '明白', '好的', '好哒', '没问题', '同意', '了解'],
-  鼓励: ['鼓励', '加油', '你可以', '你能行', '坚持', '打气'],
-  安慰: ['安慰', '抱抱', '别难过', '摸摸头', '不哭'],
-  疑惑: ['疑惑', '困惑', '疑问', '问号', '不懂', '歪头', '奇怪'],
-  无语: ['无语', '沉默', '扶额', '无奈', '呆滞'],
-  震惊: ['震惊', '惊讶', '吃惊', '震撼', '目瞪口呆'],
-  生气: ['生气', '气愤', '气鼓鼓', '愤怒', '恼火'],
-  道歉: ['道歉', '对不起', '抱歉', '认错', '我错了'],
-  晚安: ['晚安', '睡觉', '睡了', '好梦', '困了'],
-  早安: ['早安', '早上好', '起床'],
-  摸鱼: ['摸鱼', '偷懒', '摆烂', '躺平', '划水'],
-  喜欢: ['喜欢', '爱你', '比心', '贴贴', '心动'],
-  尴尬: ['尴尬', '汗颜', '社死', '捂脸'],
-  得意: ['得意', '骄傲', '自豪', '叉腰'],
-  大笑: ['大笑', '哈哈', '笑死', '笑出声', '爆笑']
-};
-const clean = (s) => String(s ?? '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+const ROLE_PREFIXES = [...new Set(ROLES.flat())].sort((a, b) => b.length - a.length);
 const clip = (s, n) => typeof s === 'string' ? s.slice(0, n) : '';
+
+// Source-specific corrections stay at ingestion, not in ranking or sending.
+// Observed on 2026-10-02. Apply only while the misleading title is unchanged.
+const CORRECTIONS = {
+  '1532': ['DeepSeek鲸娘『加载可爱中』表情包', 'DeepSeek形象对比的社交平台截图'],
+  '1531': ['DeepSeek鲸娘『可爱即正义』表情包', 'DeepSeek鲸娘全身插画'],
+  '1610': ['DeepSeek鲸娘『贴贴』表情包', 'DeepSeek鲸娘单人像（国旗背景）']
+};
+
+function sourceLabel(title) {
+  const prefix = ROLE_PREFIXES.find(alias => title.toLowerCase().startsWith(alias.toLowerCase()));
+  return (prefix ? title.slice(prefix.length).replace(/^(?:女仆)?(?:鲸鱼?|酱)?娘?/, '') : title).trim();
+}
 
 export function parseIndex(raw) {
   if (!raw?.gallery || Array.isArray(raw.gallery) || typeof raw.gallery !== 'object') throw new Error('图库索引格式已变更');
@@ -47,11 +43,17 @@ export function parseIndex(raw) {
         seen.add(original);
         let preview = '';
         try { if (typeof value.preview === 'string') preview = trustedUrl(value.preview); } catch { /* optional */ }
-        const title = clip(value.name || value.alt, 300);
-        const alt = clip(value.alt, 300);
-        const story = clip(typeof value.story === 'string' ? value.story : value.story?.zh, 1600);
+        let title = clip(value.name || value.alt, 300);
+        let alt = clip(value.alt, 300);
+        let story = clip(typeof value.story === 'string' ? value.story : value.story?.zh, 1600);
         const id = /\/(\d+)\.[a-z]+$/i.exec(new URL(original).pathname)?.[1];
-        result.push({ original, preview, title, alt, story, category: clip(category, 80), page: `https://aigengtu.com/meme/${id}` });
+        const correction = CORRECTIONS[id];
+        const requestOnly = correction?.[0] === title;
+        if (requestOnly) { title = correction[1]; alt = ''; story = ''; }
+        let label = sourceLabel(title);
+        if (!meaningfulText(label) && meaningfulText(sourceLabel(alt))) { title = alt; label = sourceLabel(alt); }
+        result.push({ original, preview, title, alt, story, label,
+          ...(requestOnly ? { requestOnly: true } : {}), category: clip(category, 80), page: `https://aigengtu.com/meme/${id}` });
       } catch { /* invalid entries are not fetch targets */ }
       if (result.length >= 20000) return result;
     }
@@ -118,45 +120,6 @@ function roleFrom(value) {
   return role[0];
 }
 
-function knownMoodWords(value) {
-  const q = clean(value);
-  const match = Object.entries(MOODS).find(([mood, words]) => clean(mood) === q || words.some((w) => clean(w) === q));
-  return match ? match[1] : [];
-}
-
-function moodWords(value) {
-  const known = knownMoodWords(value);
-  const q = clean(value);
-  return known.length ? known : q ? [q] : [];
-}
-
-// Only inspect the immediate prefix, without crossing punctuation or clauses.
-// Lexical phrases such as 没问题/不懂/不哭 are matched as whole phrases.
-const NEGATED_PREFIX = /(?:不|没(?:有)?|未|别|莫|勿|并非|不是|不能|无法)(?:再|太|很|怎么|那么|这么|够|算|想|要|会|敢|能|可能|真的|真|特别|完全|十分|一直|已经|任何|一点|一丝|一丁点|有点|值得|\s){0,4}$/u;
-
-function occurrences(text, word) {
-  const positions = [];
-  if (!word) return positions;
-  for (let at = text.indexOf(word); at !== -1; at = text.indexOf(word, at + word.length)) positions.push(at);
-  return positions;
-}
-
-function isNegated(text, at) {
-  return NEGATED_PREFIX.test(text.slice(Math.max(0, at - 20), at));
-}
-
-function matches(text, word) {
-  const q = clean(word);
-  if (!occurrences(text, q).some((at) => !isNegated(text, at))) return false;
-  // "好的，现在我是你爹了" is not an acknowledgement. Require a complete "好的" caption.
-  if (q === '好的') return /(?:^|[『「“"'\s])好的(?:[』」”"'。！!]|$)/.test(text);
-  return true;
-}
-
-export function isAffirmedPhrase(text, phrase) {
-  return matches(clean(text), clean(phrase));
-}
-
 export function rankCandidates(items, { keyword = '', emotion = '', character = '', defaultCharacter = 'auto', random = false } = {}) {
   let query = clean(keyword).slice(0, 120);
   const explicitRole = roleFrom(character);
@@ -180,32 +143,35 @@ export function rankCandidates(items, { keyword = '', emotion = '', character = 
   const scored = [];
   for (const item of items) {
     if (roles.length && !roles.includes(item.category)) continue;
-    const title = clean(`${item.title} ${item.alt}`), story = clean(item.story);
+    const info = selectionInfo(item);
+    const title = clean(info.label), story = clean(info.description);
     // Exclude contradictory moods before scoring so another synonym or dedupe cannot resurrect them.
     if (intendedMood.some((word) => occurrences(title, clean(word)).some((at) => isNegated(title, at)))) continue;
     const caption = clean(/[『「“]([^』」”]+)[』」”]/.exec(item.title)?.[1] || '').replace(/[\s\p{P}\p{S}]/gu, '');
-    let score = 0, hits = 0, titleSupport = false;
+    let score = 0, hits = 0, titleSupport = false, descriptionSupport = false;
     for (const term of terms) {
       if (matches(title, term)) {
         score += 12; hits++; titleSupport = true;
         if (caption === term) score += 12;
         else if (caption.includes(term) && caption.length <= 12) score += 6;
       }
-      else if (matches(story, term)) { score += 3; hits++; }
+      else if (matches(story, term)) { score += 3; hits++; descriptionSupport = true; }
       else {
         const synonyms = moodWords(term);
         if (synonyms.some((w) => matches(title, w))) { score += 5; hits++; titleSupport = true; }
-        else if (synonyms.some((w) => matches(story, w))) { score += 1; hits++; }
+        else if (synonyms.some((w) => matches(story, w))) { score += 1; hits++; descriptionSupport = true; }
       }
     }
     if (terms.length && !hits) continue;
     if (mood.length) {
       if (mood.some((w) => matches(title, w))) { score += 10; titleSupport = true; }
-      else if (mood.some((w) => matches(story, w))) score += 2;
+      else if (mood.some((w) => matches(story, w))) { score += 2; descriptionSupport = true; }
       else continue;
     }
     // Narrative mentions (e.g. "收到用户的迷惑输入") do not establish a reply's intent.
-    if ((terms.length || mood.length) && !titleSupport) continue;
+    // A description can be the only usable evidence for an untitled image.
+    // It must not override a meaningful title expressing something else.
+    if ((terms.length || mood.length) && !titleSupport && !(info.evidence === 'description' && descriptionSupport)) continue;
     if (terms.length > 1 && hits === terms.length) score += 8;
     if (score && (caption.length > 35 || /[四五六九]格|拼图|合集/.test(title))) score *= 0.65;
     scored.push({ ...item, score: score || 1 });
