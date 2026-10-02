@@ -202,15 +202,15 @@ test('系统提示在发送前、冷却中、跨会话及冷却结束后保持�
   assert.deepEqual(after.slice(0, 2), original);
 });
 
-test('默认预置4张精简候选，检索默认6张，仍保留按描述选择的必要信息', async t => {
+test('默认预置3张精简候选，检索默认4张，仍保留按描述选择的必要信息', async t => {
   const data = Array.from({ length: 8 }, (_, i) => row(i + 1, `DeepSeek娘『抱抱 ${i}』表情包`, { zh: '拥抱安慰的图片说明。'.repeat(10) }));
   const { ctx, tools } = await host(t, data);
   const messages = [{ role: 'user', content: '抱抱' }];
   hooks['before-llm-messages']({ ...ctx, messages });
   const candidates = JSON.parse(messages.at(-1).content.split('\n').at(-1));
-  assert.equal(candidates.length, 4);
+  assert.equal(candidates.length, 3);
   assert.ok(candidates.every(x => Object.keys(x).sort().join(',') === 'id,title'));
-  assert.equal((await execute(tools.find_meme, ctx, { keyword: '抱抱' })).candidates.length, 6);
+  assert.equal((await execute(tools.find_meme, ctx, { keyword: '抱抱' })).candidates.length, 4);
   const [descriptionOnly] = items(row(20, 'DeepSeek娘表情包', { zh: '张开双臂给你抱抱。' }));
   assert.equal(describe(descriptionOnly, false, { compact: true }).description, '张开双臂给你抱抱。');
 });

@@ -14,7 +14,7 @@ export function meaningfulText(value) {
 export function selectionInfo(item) {
   const label = clean(item.label ?? item.title).replace(item.category || '\0', '').trim();
   const description = clean(item.story);
-  const hasTitle = meaningfulText(label);
+  const hasTitle = meaningfulText(label) || (item.origin === 'local' && /^[\p{Script=Han}]$/u.test(label));
   const hasDescription = meaningfulText(description);
   return {
     label,

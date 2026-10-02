@@ -35,13 +35,13 @@ test('图片成功缓存可跨轮和重启复用，不再次联网', async t => 
   assert.equal(calls, before);
 });
 
-test('原图挂起时并行预览立即获胜，并取消原图请求', async t => {
+test('原图超时后使用并行预览，并取消原图请求', async t => {
   const dir = await directory(t);
   let aborted = false;
   const cache = createImageCache(async (url, { signal }) => {
     if (url.includes('0_preview')) return new Response(png);
     return new Promise((resolve, reject) => signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); }, { once: true }));
-  }, dir);
+  }, dir, { timeoutMs: 30 });
   const result = await cache.prepare(item(1));
   assert.equal(result.usedPreview, true);
   assert.equal(aborted, true);

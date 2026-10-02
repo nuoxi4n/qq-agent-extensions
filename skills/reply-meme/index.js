@@ -9,6 +9,7 @@ import { createHistory } from './lib/history.js';
 import { fingerprint } from './lib/image.js';
 import { createImageCache } from './lib/cache.js';
 import { selectionInfo } from './lib/metadata.js';
+import { createLocalSource } from './lib/local.js';
 
 const DEFAULT_DIR = path.join(os.tmpdir(), 'qq-agent-reply-meme');
 const integer = (v, fallback, min, max) => Math.min(max, Math.max(min, Number.isFinite(Number(v ?? fallback)) ? Math.floor(Number(v ?? fallback)) : fallback));
@@ -31,13 +32,28 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
   runtime?.deactivate();
   const settings = () => api.config() || {};
   const log = message => { try { api.log?.(message); } catch { /* optional logger */ } };
-  const httpFetch = (...args) => api.fetch(...args);
+  const httpFetch = (...args) => {
+    if (settings().networkEnabled === false) throw new Error('网络图源已关闭');
+    return api.fetch(...args);
+  };
   const source = createSource(httpFetch, cacheDir);
+  const local = createLocalSource();
   const images = createImageCache(httpFetch, cacheDir);
   const history = createHistory(cacheDir);
   const sessions = new Map();
   let active = false, controller = new AbortController(), timer, refresh, lastIndexAt = 0;
   const policy = () => resolvePolicy(settings());
+  const localEnabled = () => settings().localEnabled === true;
+  const networkEnabled = () => settings().networkEnabled !== false;
+  const allowed = item => item.origin === 'local'
+    ? localEnabled() && path.resolve(String(settings().localDirectory || '').trim()) === item.localRoot
+    : networkEnabled();
+  const networkShelf = () => [...new Map([...images.cachedItems(), ...source.peek()].map(item => [item.original, item])).values()];
+  const localLoad = async () => {
+    if (!localEnabled()) { local.clear(); return []; }
+    try { return await local.load(settings().localDirectory, controller.signal); }
+    catch (error) { if (!controller.signal.aborted) log(`本地表情目录暂不可用：${error.message}`); return []; }
+  };
   // 工具是否可被调用由宿主注册器判断；这里只检查自身生命周期。
   const usable = () => active;
   const releaseState = state => { for (const ticket of state.tickets.values()) if (!ticket.sending) ticket.release?.(); };
@@ -73,14 +89,16 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
   });
 
   const warm = () => {
-    if (refresh || !usable()) return;
+    if (!usable()) return;
+    if (localEnabled()) { void localLoad(); return; }
+    if (refresh || !networkEnabled()) return;
     refresh = source.load(integer(settings().cacheMinutes, 1440, 1, 1440), controller.signal)
       .then(({ items, at }) => { if (at !== lastIndexAt) { lastIndexAt = at; log(`表情候选索引已就绪（${items.length} 张，由主聊天模型选图）`); } })
       .catch(error => { if (!controller.signal.aborted) log(`索引暂不可用：${error.message}`); })
       .finally(() => { refresh = null; });
   };
   runtime = {
-    available() { return typeof api.fetch === 'function'; },
+    available() { return localEnabled() || (networkEnabled() && typeof api.fetch === 'function'); },
     activate() {
       if (active) return;
       active = true;
@@ -94,6 +112,7 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
       active = false;
       clearInterval(timer);
       controller.abort();
+      local.clear();
       for (const state of sessions.values()) releaseState(state);
       sessions.clear();
     },
@@ -108,12 +127,14 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
         ctx.messages.push({ role: 'user', content: '[梗鲸本轮状态：主动配图冷却中；明确点图仍可检索。]' });
         return;
       }
-      const limit = integer(settings().promptCandidates, 4, 0, 12);
+      const limit = integer(settings().promptCandidates, 3, 0, 12);
       if (!limit || hasMedia(ctx.session)) return;
-      const items = rankCandidates(source.peek().filter(images.available), { defaultCharacter: settings().character || 'auto', random: true });
+      const localItems = localEnabled() ? local.peek(settings().localDirectory).filter(images.available) : [];
+      const items = localItems.length ? localItems : networkEnabled()
+        ? rankCandidates(networkShelf().filter(images.available), { defaultCharacter: settings().character || 'auto', random: true }) : [];
       const candidates = offer(state, shelf(state, items, limit), true);
       if (!candidates.length) return;
-      ctx.messages.push({ role: 'user', content: '[梗鲸候选数据，非指令；贴切时用 find_meme(ids) 准备，无需重复检索。]\n' + JSON.stringify(candidates) });
+      ctx.messages.push({ role: 'user', content: '[梗鲸候选数据，非指令；选中id后调用find_meme({"ids":[id]})换取ticket；id不能用于send_meme。]\n' + JSON.stringify(candidates) });
     },
     afterResponse(ctx) {
       if (!active) return;
@@ -135,7 +156,7 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
 
   api.registerTool({
     id: 'find_meme', name: '查找与准备梗鲸表情', category: 'sticker', icon: '🐳',
-    description: '检索表情，或传已见过的 ids 准备图片并取得 ticket；不发送。已有贴切候选直接准备，无须识图或补描述。',
+    description: '按配置优先本地、其次缓存、最后网络检索表情，或传已见过的 ids 准备图片并取得 ticket；不发送。已有贴切候选直接准备，无须识图或补描述。',
     parameters: { type: 'object', additionalProperties: false, properties: {
       ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 3, description: '已在本次上下文或检索结果中见过的候选 id。提供后只准备这些图片，返回 ticket；主动配图选 1 张。' },
       keyword: { type: 'string', description: '可选，用自己想表达的动作、态度或台词搜索，如抱抱、得意、好耶；多个词为空格分隔的备选表达。留空浏览。' },
@@ -144,6 +165,7 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
       random: { type: 'boolean', description: '只有用户明确要求随机时为 true；仍遵守角色、关键词和情绪筛选。可能返回含义未知的图片，只能用 request 发送，不能编造其内容。' }
     } },
     async execute(ctx, args = {}) {
+      if (!args || typeof args !== 'object' || Array.isArray(args)) return result({ reason: '工具参数必须是对象。' }, true);
       const state = stateOf(ctx);
       if (!state || !usable() || stopped(ctx.session)) return result({ reason: '当前会话或表情工具不可用。' }, true);
       if (state.busy) return result({ reason: '本轮已有表情操作正在处理。' }, true);
@@ -154,12 +176,18 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
         const c = settings();
         if (args.ids === undefined) {
           if (state.prepareAttempts >= 3) return result({ candidates: [], sent: 0, next: '本轮准备次数已到上限，请停止检索和换图，继续文字回复。' }, true);
-          const { items, stale } = await source.load(integer(c.cacheMinutes, 1440, 1, 1440), signal);
-          if (!current(ctx, state)) return result({ reason: '会话或技能状态已变化。' }, true);
           const keyword = typeof args.keyword === 'string' ? args.keyword.trim().slice(0, 120) : '';
           const emotion = typeof args.emotion === 'string' ? args.emotion.trim().slice(0, 40) : '';
-          const eligible = rankCandidates(items.filter(item => images.available(item) && (args.random === true || selectionInfo(item).evidence !== 'unknown')), { keyword, emotion, character: typeof args.character === 'string' ? args.character : '', defaultCharacter: c.character || 'auto', random: true });
-          const limit = integer(c.poolSize, 6, 1, 40);
+          const rank = (items, isLocal = false) => rankCandidates(items.filter(item => allowed(item) && images.available(item) && (args.random === true || selectionInfo(item).evidence !== 'unknown')),
+            { keyword, emotion, character: typeof args.character === 'string' ? args.character : '', defaultCharacter: isLocal ? 'auto' : c.character || 'auto', random: true });
+          let eligible = rank(await localLoad(), true), stale = false;
+          if (!eligible.length && networkEnabled()) eligible = rank(images.cachedItems());
+          if (!eligible.length && networkEnabled()) {
+            const loaded = await source.load(integer(c.cacheMinutes, 1440, 1, 1440), signal);
+            stale = loaded.stale; eligible = rank(loaded.items);
+          }
+          if (!current(ctx, state)) return result({ reason: '会话或技能状态已变化。' }, true);
+          const limit = integer(c.poolSize, 4, 1, 40);
           let chosen;
           if (args.random === true) chosen = eligible.map(item => ({ item, tie: Math.random() })).sort((a, b) => a.tie - b.tie).slice(0, limit).map(x => x.item);
           else if (keyword || emotion) chosen = eligible.slice().sort((a, b) => b.score - a.score || Number(history.seen(ctx.chatKey, fingerprint(a.original))) - Number(history.seen(ctx.chatKey, fingerprint(b.original))) || Number(images.cached(b)) - Number(images.cached(a)) || fingerprint(state.at + a.original).localeCompare(fingerprint(state.at + b.original))).slice(0, limit);
@@ -167,18 +195,19 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
           // 每轮仅预取一次一张；与正式选择共用最多四张冷素材的预算。
           if (!state.prefetched) {
             state.prefetched = true;
-            const item = chosen.find(item => !images.cached(item));
+            const item = chosen.find(item => item.origin !== 'local' && !images.cached(item));
             if (item && state.downloads.size < 4) {
               state.downloads.add(candidateId(item));
               void images.prepare(item, signal, { prefetch: true }).then(image => image.release()).catch(() => {});
             }
           }
-          return result({ candidates: offer(state, chosen), cachedIndex: stale, next: '选贴切的 id 准备，无合适素材就结束检索。' });
+          return result({ candidates: offer(state, chosen), cachedIndex: stale, next: chosen.length ? '调用 reply-meme__find_meme({"ids":["所选id"]}) 获取 ticket；候选 id 不能传给 send_meme。无贴切素材就结束。' : '无匹配素材，结束检索，继续文字回复。' });
         }
         const ids = [...new Set(args.ids)];
         if (ids.some(id => !state.offered.has(id))) return result({ reason: '候选不在本次会话提供的列表中，请重新检索，不接受自行编造的编号或 URL。' }, true);
         const prepared = [], failures = [];
         for (const id of ids) {
+          if (!allowed(state.offered.get(id))) { failures.push({ id, reason: '图源已关闭或本地目录已变更，请重新检索。' }); continue; }
           if ([...state.tickets.values()].some(t => t.id === id && t.used)) { failures.push({ id, reason: '本轮已尝试发送过这张图，不重复准备。' }); continue; }
           const existing = [...state.tickets.values()].find(t => t.id === id && !t.used && fs.existsSync(t.file));
           if (existing) { prepared.push({ id, ticket: existing.ticket, ...(selectionInfo(existing.item).requestOnly ? { requestOnly: true } : {}) }); continue; }
@@ -197,7 +226,7 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
             failures.push({ id, reason: error.message });
             continue;
           }
-          if (!current(ctx, state) || signal.aborted) { image.release(); return result({ reason: '图片准备期间状态已变化，没有发送。' }, true); }
+          if (!current(ctx, state) || signal.aborted || !allowed(candidate)) { image.release(); return result({ reason: '图片准备期间状态已变化，没有发送。' }, true); }
           const { release, ...data } = image;
           const item = { ...candidate, ...data, urlHash: fingerprint(candidate.original) };
           const ticket = randomUUID();
@@ -205,11 +234,12 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
           const { buf, ...metadata } = item;
           state.tickets.set(ticket, { id, ticket, file, item: metadata, round: state.round, used: false, release });
           prepared.push({ id, ticket, evidence: selectionInfo(item).evidence,
+            ...(image.usedPreview ? { preview: true } : {}),
             ...(selectionInfo(item).requestOnly ? { requestOnly: true } : {}),
             ...(Math.min(item.w, item.h) < integer(c.minShortSide, 160, 0, 2000) ? { small: true, width: item.w, height: item.h } : {}) });
         }
         return result({ prepared, failures, sent: 0, next: prepared.length
-          ? '用 ticket 调用 send_meme；reply 先发文字。不重复检索。'
+          ? '将 prepared 中的 ticket 传给 send_meme.tickets，不能用 id。reply 需已有文字，已发则勿重发。'
           : '没有可发送的 ticket，不要调用 send_meme。主动配图失败就继续文字，不要连续换图拖延回复；用户明确点图可从候选中优先选 cached=true 的素材，本轮最多尝试 3 张。' }, prepared.length === 0);
       } catch (error) { return result({ reason: `表情准备未完成：${error.message}`, sent: 0 }, true); }
       finally { state.busy = false; }
@@ -218,12 +248,13 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
 
   api.registerTool({
     id: 'send_meme', name: '发送已选梗鲸表情', category: 'sticker', icon: '🐳',
-    description: '发送 find_meme 返回的 ticket。reply 先发文字再配1张；明确点图用 request。成功后不重复发送或汇报。',
+    description: '仅发送 find_meme(ids) 的 prepared.ticket，不能发送 candidates.id。reply=文字后的主动配图；request=明确点图。成功后结束。',
     parameters: { type: 'object', additionalProperties: false, properties: {
       tickets: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 3, description: 'find_meme 返回的图片 ticket，不能填候选 id 或 URL。reply 只能 1 个。' },
       mode: { type: 'string', enum: ['reply', 'request'], description: 'reply=根据聊天语境主动配图；request=用户明确要图。' }
     }, required: ['tickets', 'mode'] },
     async execute(ctx, args = {}) {
+      if (!args || typeof args !== 'object' || Array.isArray(args)) return result({ reason: '工具参数必须是对象。' }, true);
       const state = stateOf(ctx);
       const fail = reason => result({ sent: 0, reason }, true);
       if (!state || !usable() || stopped(ctx.session) || typeof ctx.sender?.sendImage !== 'function') return fail('当前会话或发送工具不可用。');
@@ -233,15 +264,18 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
       if (tickets.length > (proactive ? 1 : max) || state.sent + tickets.length > max) return fail('超过本轮图片数量上限。');
       if (state.busy || state.uncertain) return fail('本轮正在处理图片或上次发送未确认，不自动重发。');
       if (proactive && (!policy().proactive || cooling(ctx.chatKey) || hasMedia(ctx.session) || !hasText(ctx.session))) return fail('主动配图未开启、仍在冷却，或本轮尚未成功发文字/已经发过媒体。');
+      const candidateIds = tickets.filter(ticket => state.offered.has(ticket));
+      if (candidateIds.length) return fail('误把候选 id 当作 ticket。先调用 reply-meme__find_meme(' + JSON.stringify({ ids: candidateIds }) + ')，再将 prepared.ticket 传给 send_meme.tickets；保持原 mode，已发文字勿重发。');
       const entries = tickets.map(ticket => state.tickets.get(ticket));
       if (entries.some(item => !item || item.used || state.round <= item.round || !fs.existsSync(item.file))) return fail('发送凭据不可用：请先准备图片，读取工具结果后再决定发送。');
+      if (entries.some(entry => !allowed(entry.item))) return fail('图源已关闭或本地目录已变更，凭据不可发送。');
       if (proactive && entries.some(entry => selectionInfo(entry.item).requestOnly)) return fail('所选素材仅供明确点图：展示图片或含义未知的图片不能主动配图。请继续文字，不要改用 request 绕过。');
       if (new Set(entries.map(entry => entry.item.hash)).size !== entries.length) return fail('所选图片内容重复，请只发送一张。');
       state.busy = true;
       const sent = [];
       try {
         for (const entry of entries) {
-          if (!current(ctx, state) || (proactive && (!policy().proactive || cooling(ctx.chatKey) || hasMedia(ctx.session)))) break;
+          if (!current(ctx, state) || !allowed(entry.item) || (proactive && (!policy().proactive || cooling(ctx.chatKey) || hasMedia(ctx.session)))) break;
           entry.used = true; // Ambiguous acknowledgements must never cause an automatic retry.
           entry.sending = true;
           try {

@@ -1,7 +1,9 @@
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { downloadImage, fingerprint, saveImage, sniffSize } from './image.js';
 import { createLimiter } from './limiter.js';
+import { trustedUrl } from './network.js';
 
 const MAX_AGE = 48 * 3600000;
 const validName = /^[a-f0-9]{64}\.(jpg|png|gif|webp)$/;
@@ -13,7 +15,7 @@ export function createImageCache(httpFetch, directory, { timeoutMs = 6000, failu
   const pins = new Map(), delivering = new Set();
   const limiter = createLimiter({ concurrency });
   try {
-    if (fs.statSync(manifest).size <= 1024 * 1024) {
+    if (fs.statSync(manifest).size <= 4 * 1024 * 1024) {
       const saved = JSON.parse(fs.readFileSync(manifest, 'utf8'));
       for (const [key, entry] of Object.entries(saved.images || {}).slice(-500)) {
         if (/^[a-f0-9]{64}$/.test(key) && validName.test(entry?.name) && Number.isFinite(entry.at)
@@ -119,28 +121,43 @@ export function createImageCache(httpFetch, directory, { timeoutMs = 6000, failu
         if (signal?.aborted) throw new Error('图片准备已取消');
         releaseSlot = await limiter.acquire(signal, prefetch);
         if (signal?.aborted) throw new Error('图片准备已取消');
-        const urls = [...new Set([item.original, item.preview].filter(Boolean))];
-        // 两个地址属于同一素材；先成功的可用版本获胜，不替换为另一张图。
-        attempts = urls.map(async url => ({
-          ...await downloadImage(httpFetch, url, timeoutMs, controller.signal), usedPreview: url !== item.original
-        }));
-        const fastest = Promise.any(attempts);
-        // GIF 原图成功时保留动画，不能因为静态预览更快而降级。
-        fastest.catch(() => {});
-        const image = /\.gif$/i.test(new URL(item.original).pathname)
-          ? await attempts[0].catch(() => fastest) : await fastest;
+        let image;
+        if (item.origin === 'local') {
+          const root = await fsp.realpath(item.localRoot);
+          const filePath = await fsp.realpath(item.localFile);
+          const stat = await fsp.lstat(item.localFile);
+          if (path.dirname(filePath) !== root || stat.isSymbolicLink() || !stat.isFile() || stat.size > 12 * 1024 * 1024
+              || `${stat.size}:${stat.mtimeMs}` !== item.revision) throw new Error('本地图片已变更，请重新检索');
+          const buf = await fsp.readFile(filePath);
+          const after = await fsp.stat(filePath);
+          if (`${after.size}:${after.mtimeMs}` !== item.revision || buf.length !== stat.size) throw new Error('本地图片读取时发生变化');
+          const size = sniffSize(buf);
+          if (!size || !size.w || !size.h || size.w > 20000 || size.h > 20000) throw new Error('本地文件不是支持的图片');
+          image = { ...size, buf, bytes: buf.length, hash: fingerprint(buf), usedPreview: false };
+        } else {
+          const urls = [...new Set([item.original, item.preview].filter(Boolean))];
+          // 并行请求以限制总等待；原图成功时始终保留原始字节，预览仅兜底。
+          attempts = urls.map(async url => ({
+            ...await downloadImage(httpFetch, url, timeoutMs, controller.signal), usedPreview: url !== item.original
+          }));
+          const fastest = Promise.any(attempts);
+          fastest.catch(() => {});
+          image = await attempts[0].catch(() => fastest);
+        }
         if (signal?.aborted) throw new Error('图片准备已取消');
         const file = saveImage(directory, image);
         delivering.add(file);
         const { buf, ...metadata } = image;
-        records.set(key, { ...metadata, name: path.basename(file), at: Date.now() });
+        const sourceItem = item.origin === 'local' ? undefined : Object.fromEntries(
+          ['original', 'preview', 'title', 'alt', 'label', 'story', 'category', 'page', 'requestOnly'].filter(k => item[k] !== undefined).map(k => [k, item[k]]));
+        records.set(key, { ...metadata, ...(sourceItem ? { sourceItem } : {}), name: path.basename(file), at: Date.now() });
         failures.delete(key);
         persist();
         return { ...metadata, file, cached: false };
       } catch (error) {
         if (signal?.aborted) throw new Error('图片准备已取消');
         if (error.code === 'cache-capacity') throw error;
-        const reason = error instanceof AggregateError ? [...new Set(error.errors.map(e => e.message))].join('；') : error.message;
+        const reason = item.origin === 'local' && error.code ? '本地文件无法读取，请检查目录并重新检索' : error instanceof AggregateError ? [...new Set(error.errors.map(e => e.message))].join('；') : error.message;
         while (failures.size >= 1000) failures.delete(failures.keys().next().value);
         failures.set(key, { until: Date.now() + failureTtlMs });
         throw new Error(`所选素材无法准备：${String(reason).slice(0, 180)}`);
@@ -163,5 +180,12 @@ export function createImageCache(httpFetch, directory, { timeoutMs = 6000, failu
       sweep();
     }
   }
-  return { prepare, available, cached, sweep };
+  const cachedItems = () => [...records.values()].flatMap(entry => {
+    const item = entry.sourceItem;
+    try {
+      if (!item || trustedUrl(item.original) !== item.original || typeof item.title !== 'string' || !cached(item)) return [];
+      return [item];
+    } catch { return []; }
+  });
+  return { prepare, available, cached, sweep, cachedItems };
 }
