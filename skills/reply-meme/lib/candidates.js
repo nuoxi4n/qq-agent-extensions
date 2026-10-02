@@ -16,7 +16,7 @@ const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' });
 const norm = value => String(value || '').normalize('NFKC').toLowerCase();
 export const candidateId = item => fingerprint(item.original).slice(0, 16);
 
-export function buildCandidates(items, text = '', { seen = () => false, cached = () => false, limit = 12, seed = '' } = {}) {
+export function buildCandidates(items, text = '', { seen = () => false, cached = () => false, limit = 12, seed = '', relevantOnly = false } = {}) {
   // Recent lines win over accumulated history; repeated common words cannot
   // manufacture relevance. This retrieves vocabulary, not the user's emotion.
   const words = new Map();
@@ -50,6 +50,7 @@ export function buildCandidates(items, text = '', { seen = () => false, cached =
   const add = item => { if (item && !taken.has(item.original) && selected.length < limit) { taken.add(item.original); selected.push(item); } };
   const bestFit = Math.max(0, ...pool.map(x => x.fit));
   const related = pool.filter(x => x.fit > 0 && x.fit >= bestFit * 0.5).sort((a, b) => b.fit - a.fit || novelty(a, b));
+  if (relevantOnly) return related.slice(0, limit);
   related.slice(0, Math.max(1, Math.ceil(limit * 2 / 3))).forEach(add);
   // A small rotating shelf lets the main model respond with a different attitude
   // than the user's words. Do not always spend the spare slots on anger/laughter.

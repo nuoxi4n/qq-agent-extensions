@@ -45,6 +45,50 @@ test('异常工具参数按官方契约返回 isError，不抛出或联网', asy
   }
 });
 
+test('有话题时本地不贴切则使用已有网络候选，hook不联网且候选上限不变', async t => {
+  const { localDir, cacheDir } = await fixture(t);
+  await fs.writeFile(path.join(localDir, '抱抱.png'), png);
+  const cache = createImageCache(async () => new Response(png), cacheDir);
+  (await cache.prepare(remote)).release();
+  let calls = 0;
+  const { tools, ctx } = await runtime({ localEnabled: true, localDirectory: localDir, promptCandidates: 1, poolSize: 1 }, cacheDir,
+    async () => { calls++; throw new Error('不应联网'); });
+  await run(tools.find_meme, ctx, { keyword: '抱抱' }); // 等待本地扫描
+  const messages = [{ role: 'user', content: '今天很开心' }];
+  hooks['before-llm-messages']({ ...ctx, messages });
+  const offered = JSON.parse(messages.at(-1).content.split('\n').at(-1));
+  assert.equal(offered.length, 1);
+  assert.equal(offered[0].title, '开心');
+  const list = await run(tools.find_meme, ctx, {});
+  assert.equal(list.candidates.length, 1);
+  assert.equal(list.candidates[0].title, '开心');
+  assert.equal(calls, 0);
+  const localMessages = [{ role: 'user', content: '抱抱我' }];
+  hooks['before-llm-messages']({ ...ctx, messages: localMessages });
+  assert.equal(JSON.parse(localMessages.at(-1).content.split('\n').at(-1))[0].title, '抱抱');
+  assert.equal((await run(tools.find_meme, ctx, {})).candidates[0].title, '抱抱');
+  assert.equal(calls, 0);
+});
+
+test('本地和已有网络候选均不贴切时，无关键词检索才联网；网络开关仍生效', async t => {
+  const { localDir, cacheDir } = await fixture(t);
+  await fs.writeFile(path.join(localDir, '抱抱.png'), png);
+  let calls = 0;
+  const config = { localEnabled: true, localDirectory: localDir, networkEnabled: false };
+  const { tools, ctx } = await runtime(config, cacheDir, async url => {
+    calls++;
+    return String(url).includes('.json') ? Response.json({ gallery: { DeepSeek娘: { images: [{ ...remote, name: '开心' }] } } }) : new Response(png);
+  });
+  const messages = [{ role: 'user', content: '今天很开心' }];
+  hooks['before-llm-messages']({ ...ctx, messages });
+  assert.equal(messages.length, 1);
+  assert.deepEqual((await run(tools.find_meme, ctx, {})).candidates, []);
+  assert.equal(calls, 0);
+  config.networkEnabled = true;
+  assert.equal((await run(tools.find_meme, ctx, {})).candidates[0].title, '开心');
+  assert.ok(calls > 0);
+});
+
 test('候选ID误用于发送时给出准确准备调用，纠正后可用reply发送且不重复文字', async t => {
   const { localDir, cacheDir } = await fixture(t);
   await fs.writeFile(path.join(localDir, '晚安_好梦.png'), png);
@@ -61,6 +105,10 @@ test('候选ID误用于发送时给出准确准备调用，纠正后可用reply�
   assert.equal(sent.length, 0);
   const ready = await run(tools.find_meme, ctx, { ids: [id] });
   assert.match(ready.next, /已发则勿重发/);
+  assert.equal(ready.sent, 0);
+  assert.match(ready.next, /finish 不会代发/);
+  assert.match(ready.next, /reply-meme__send_meme/);
+  assert.match(ready.next, /条件不满足时可放弃/);
   const args = { tickets: [ready.prepared[0].ticket], mode: 'reply' };
   assert.equal((await run(tools.send_meme, ctx, args)).sent, 0, '仍需经过下一次模型响应');
   hooks['after-response'](ctx);

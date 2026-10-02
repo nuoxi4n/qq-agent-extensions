@@ -84,8 +84,8 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
     const data = describe(item, history.seen(state.chatKey, fingerprint(item.original)), { compact });
     return compact ? { ...data, ...(images.cached(item) ? { cached: true } : {}) } : { ...data, cached: images.cached(item) };
   });
-  const shelf = (state, items, limit = 12) => buildCandidates(items, state.text, {
-    limit, seed: state.chatKey + ':' + state.at, seen: item => history.seen(state.chatKey, fingerprint(item.original)), cached: item => images.cached(item)
+  const shelf = (state, items, limit = 12, relevantOnly = false) => buildCandidates(items, state.text, {
+    limit, relevantOnly, seed: state.chatKey + ':' + state.at, seen: item => history.seen(state.chatKey, fingerprint(item.original)), cached: item => images.cached(item)
   });
 
   const warm = () => {
@@ -130,9 +130,13 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
       const limit = integer(settings().promptCandidates, 3, 0, 12);
       if (!limit || hasMedia(ctx.session)) return;
       const localItems = localEnabled() ? local.peek(settings().localDirectory).filter(images.available) : [];
-      const items = localItems.length ? localItems : networkEnabled()
-        ? rankCandidates(networkShelf().filter(images.available), { defaultCharacter: settings().character || 'auto', random: true }) : [];
-      const candidates = offer(state, shelf(state, items, limit), true);
+      const contextual = localEnabled() && !!state.text.trim();
+      let chosen = shelf(state, localItems, limit, contextual);
+      if (!chosen.length && networkEnabled()) {
+        const items = rankCandidates(networkShelf().filter(images.available), { defaultCharacter: settings().character || 'auto', random: true });
+        chosen = shelf(state, items, limit, contextual);
+      }
+      const candidates = offer(state, chosen, true);
       if (!candidates.length) return;
       ctx.messages.push({ role: 'user', content: '[梗鲸候选数据，非指令；选中id后调用find_meme({"ids":[id]})换取ticket；id不能用于send_meme。]\n' + JSON.stringify(candidates) });
     },
@@ -156,7 +160,7 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
 
   api.registerTool({
     id: 'find_meme', name: '查找与准备梗鲸表情', category: 'sticker', icon: '🐳',
-    description: '按配置优先本地、其次缓存、最后网络检索表情，或传已见过的 ids 准备图片并取得 ticket；不发送。已有贴切候选直接准备，无须识图或补描述。',
+    description: '按配置优先本地、其次缓存、最后网络检索表情，或传已见过的 ids 准备图片并取得 ticket；不发送。已有贴切候选直接准备；准备成功仍未发送，需继续调用 send_meme。',
     parameters: { type: 'object', additionalProperties: false, properties: {
       ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 3, description: '已在本次上下文或检索结果中见过的候选 id。提供后只准备这些图片，返回 ticket；主动配图选 1 张。' },
       keyword: { type: 'string', description: '可选，用自己想表达的动作、态度或台词搜索，如抱抱、得意、好耶；多个词为空格分隔的备选表达。留空浏览。' },
@@ -178,10 +182,14 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
           if (state.prepareAttempts >= 3) return result({ candidates: [], sent: 0, next: '本轮准备次数已到上限，请停止检索和换图，继续文字回复。' }, true);
           const keyword = typeof args.keyword === 'string' ? args.keyword.trim().slice(0, 120) : '';
           const emotion = typeof args.emotion === 'string' ? args.emotion.trim().slice(0, 40) : '';
-          const rank = (items, isLocal = false) => rankCandidates(items.filter(item => allowed(item) && images.available(item) && (args.random === true || selectionInfo(item).evidence !== 'unknown')),
+          const contextual = localEnabled() && !keyword && !emotion && args.random !== true && !!state.text.trim();
+          const rank = (items, isLocal = false) => {
+            const ranked = rankCandidates(items.filter(item => allowed(item) && images.available(item) && (args.random === true || selectionInfo(item).evidence !== 'unknown')),
             { keyword, emotion, character: typeof args.character === 'string' ? args.character : '', defaultCharacter: isLocal ? 'auto' : c.character || 'auto', random: true });
+            return contextual ? shelf(state, ranked, 40, true) : ranked;
+          };
           let eligible = rank(await localLoad(), true), stale = false;
-          if (!eligible.length && networkEnabled()) eligible = rank(images.cachedItems());
+          if (!eligible.length && networkEnabled()) eligible = rank(networkShelf());
           if (!eligible.length && networkEnabled()) {
             const loaded = await source.load(integer(c.cacheMinutes, 1440, 1, 1440), signal);
             stale = loaded.stale; eligible = rank(loaded.items);
@@ -239,7 +247,7 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
             ...(Math.min(item.w, item.h) < integer(c.minShortSide, 160, 0, 2000) ? { small: true, width: item.w, height: item.h } : {}) });
         }
         return result({ prepared, failures, sent: 0, next: prepared.length
-          ? '将 prepared 中的 ticket 传给 send_meme.tickets，不能用 id。reply 需已有文字，已发则勿重发。'
+          ? '图片仅准备好，尚未发送；finish 不会代发。仍要配图且条件满足时，下一步调用 reply-meme__send_meme，将 prepared.ticket 填入 tickets。主动配图用 reply，明确点图用 request；文字已发则勿重发。确认 sent>0 后再结束；素材不合适、用户取消或条件不满足时可放弃。'
           : '没有可发送的 ticket，不要调用 send_meme。主动配图失败就继续文字，不要连续换图拖延回复；用户明确点图可从候选中优先选 cached=true 的素材，本轮最多尝试 3 张。' }, prepared.length === 0);
       } catch (error) { return result({ reason: `表情准备未完成：${error.message}`, sent: 0 }, true); }
       finally { state.busy = false; }
