@@ -3,7 +3,7 @@ name: ai-image
 description: 在 QQ-agent 中通过兼容 images API 的服务执行文生图或图生图；用户要求画图、按参考图修改或转换风格时使用。
 metadata:
   author: nuoxi4n
-  version: 1.0.1
+  version: 1.0.2
 ---
 
 # AI生图
@@ -17,6 +17,9 @@ metadata:
 `model` 默认 `gpt-image-1`，应改为服务商实际提供的图片模型；图生图需要模型支持 `/images/edits`。
 需要单独的编辑模型时填写 `editModel`，否则复用 `model`。
 不要在聊天参数或提示词里传递 API Key。
+
+管理员可配置单次张数 `maxImagesPerRequest`（默认 2）、每人每日次数 `dailyUserLimit`（默认 10）、全局每日次数 `dailyTotalLimit`（默认 100）、累计次数 `totalLimit`（默认 1000）和关键词黑名单 `blockedKeywords`（默认空）。次数限制设为 0 表示不限，日额度北京时间零点重置。累计统计持久化，文生图和图生图共用；每次提交接口含失败和重试均计次。
+遇到额度不足、身份不明或黑名单拦截，应如实告知用户，不得拆单、切换工具或改写关键词绕过。个人身份由本轮真实发言者决定，不能在工具参数中指定别人的 QQ 号。黑名单只匹配提示词，不检查图片内容。
 
 ## 选择工具
 
@@ -45,3 +48,4 @@ metadata:
 失败返回 `{ ok: false, error }`。每张图含标准 `dataUrl`、`filePath`、`mime`、`bytes`。
 `image.edit` 的参考图参数为 `image: { buffer }`、`{ dataUrl }` 或 `{ url }`。
 能力调用只等待图片数据返回，不会自动发图、检查开始文字或调用聊天模型回复；上述顺序回复流程仅适用于聊天工具。
+能力接口同样执行单次张数、关键词和全局额度检查；没有可信用户上下文，所有扩展共用一个独立日额度（数值同 `dailyUserLimit`），传入 `userId` 不会更换计数身份。

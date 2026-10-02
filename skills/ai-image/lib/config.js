@@ -36,6 +36,11 @@ export function readSettings(raw = {}, mode = 'generate') {
   const responseFormat = raw.responseFormat || 'auto';
   if (!['auto', 'url', 'b64_json'].includes(responseFormat)) throw new Error('返回格式只能是 auto、url 或 b64_json');
   return {
+    maxImagesPerRequest: limitSetting(raw.maxImagesPerRequest, 2, 1, 4, '单次图片上限'),
+    dailyUserLimit: limitSetting(raw.dailyUserLimit, 10, 0, 1000000, '每人每日次数'),
+    dailyTotalLimit: limitSetting(raw.dailyTotalLimit, 100, 0, 1000000, '全局每日次数'),
+    totalLimit: limitSetting(raw.totalLimit, 1000, 0, Number.MAX_SAFE_INTEGER, '累计次数上限'),
+    blockedKeywords: String(raw.blockedKeywords ?? '').split(/[\n,，;；]+/).map(normalizeKeyword).filter(Boolean),
     endpoint: resolveEndpoint(baseUrl, mode), apiKey, model, extraBody, responseFormat,
     defaultSize: String(raw.defaultSize || '').trim(),
     timeoutMs: numberSetting(raw.timeoutMs, 180000, 5000, 600000),
@@ -45,6 +50,16 @@ export function readSettings(raw = {}, mode = 'generate') {
     maxImageBytes: numberSetting(raw.maxImageMB, 8, 1, 32) * MB,
     maxRefBytes: numberSetting(raw.maxRefMB, 20, 1, 50) * MB
   };
+}
+
+function limitSetting(value, fallback, min, max, name) {
+  const n = value === '' || value == null ? fallback : Number(value);
+  if (!Number.isSafeInteger(n) || n < min || n > max) throw new Error(`${name} 必须是 ${min}~${max} 的整数`);
+  return n;
+}
+
+export function normalizeKeyword(value) {
+  return value.normalize('NFKC').toLowerCase().replace(/[\s\p{Cf}]/gu, '');
 }
 
 export function positiveInteger(value, fallback, name, max) {
@@ -57,7 +72,10 @@ export function validateArgs(args = {}, settings) {
   if (typeof args.prompt !== 'string' || !args.prompt.trim()) throw new Error('请提供非空的 prompt 图片描述或修改要求');
   const prompt = args.prompt.trim();
   if (prompt.length > 2000) throw new Error('prompt 最多 2000 字');
-  const count = positiveInteger(args.count, 1, 'count', 4);
+  const count = positiveInteger(args.count, 1, 'count', settings.maxImagesPerRequest);
+  if (settings.blockedKeywords.some(keyword => normalizeKeyword(prompt).includes(keyword))) {
+    throw new Error('图片描述命中生图关键词黑名单，请修改请求；不要尝试绕过限制');
+  }
   const size = String(args.size ?? '').trim() || settings.defaultSize;
   if (size && !/^(auto|[1-9]\d{1,4}x[1-9]\d{1,4})$/.test(size)) {
     throw new Error('size 请使用 auto 或 宽x高（例如 1024x1024）；实际支持的尺寸取决于模型');

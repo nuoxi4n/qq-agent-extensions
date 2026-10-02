@@ -120,6 +120,7 @@ export function createImageClient(fetcher) {
     for (let attempt = 0; ; attempt++) {
       operation?.check();
       let result;
+      operation?.beforeSubmit?.();
       try {
         result = await fetchBytes(fetcher, settings.endpoint, {
           method: 'POST',

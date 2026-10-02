@@ -41,3 +41,26 @@ test('付费操作之前拒绝不合法的参数', () => {
   for (const prompt of ['', '  ', 1, 'a'.repeat(2001)]) assert.throws(() => validateArgs({ prompt }, settings));
   assert.throws(() => validateArgs({ prompt: '猫', size: 'wrong' }, settings));
 });
+
+test('配额配置使用安全默认值，非法配置不会静默关闭限制', () => {
+  const settings = readSettings(raw);
+  assert.equal(settings.maxImagesPerRequest, 2);
+  assert.equal(settings.dailyUserLimit, 10);
+  assert.equal(settings.dailyTotalLimit, 100);
+  assert.equal(settings.totalLimit, 1000);
+  for (const key of ['maxImagesPerRequest', 'dailyUserLimit', 'dailyTotalLimit', 'totalLimit']) {
+    for (const value of [-1, 0.5, 'NaN', Infinity]) assert.throws(() => readSettings({ ...raw, [key]: value }));
+  }
+  assert.throws(() => readSettings({ ...raw, maxImagesPerRequest: 0 }));
+  assert.throws(() => readSettings({ ...raw, maxImagesPerRequest: 5 }));
+  assert.throws(() => validateArgs({ prompt: '猫', count: 2 }, readSettings({ ...raw, maxImagesPerRequest: 1 })), /count/);
+});
+
+test('黑名单支持多种分隔符，忽略全半角、大小写、空白和零宽字符', () => {
+  const settings = readSettings({ ...raw, blockedKeywords: ' 禁词\nBLOCK,other，another;第三项；第四项\n ' });
+  for (const prompt of ['包含禁词', '禁 词', '禁\u200b词', 'ＢｌＯＣＫ', 'block', 'other', 'another', '第三项', '第四项']) {
+    assert.throws(() => validateArgs({ prompt }, settings), /黑名单/);
+  }
+  assert.equal(validateArgs({ prompt: '水彩猫' }, settings).prompt, '水彩猫');
+  assert.equal(validateArgs({ prompt: '禁词' }, readSettings(raw)).prompt, '禁词');
+});

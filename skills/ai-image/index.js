@@ -2,6 +2,7 @@
 import { readSettings, validateArgs, describeError } from './lib/config.js';
 import { createImageClient } from './lib/images.js';
 import { loadReference, providerReference } from './lib/reference.js';
+import { consumeUsage, requester } from './lib/usage.js';
 
 let config = () => ({});
 let client;
@@ -50,7 +51,7 @@ export function setup(api) {
   const common = {
     prompt: { type: 'string', minLength: 1, maxLength: 2000, description: '画面描述或改图要求。改图时写清保留什么、修改什么' },
     size: { type: 'string', description: '可选尺寸，如 1024x1024、1536x1024 或 auto；省略时使用设置值' },
-    count: { type: 'integer', minimum: 1, maximum: 4, description: '生成数量，默认 1，最多 4；模型可能有更低的限制' }
+    count: { type: 'integer', minimum: 1, maximum: 4, description: '生成数量，默认 1，最多 4；管理员单次上限或模型可能有更低的限制' }
   };
   api.registerTool({
     id: 'gen', name: '文生图', category: 'media', icon: '🎨',
@@ -92,6 +93,7 @@ export function promptSections() {
       + '执行顺序：先调用 send_message 按当前人设自然告知正在处理，确认文字发送成功后调用生图或改图工具；等工具返回，再调用 send_message 自然说明结果。'
       + '图片由工具直接发送，完成文字仍需你发送；不要因已发图就选择不发送或直接 finish，不要重复发图，未查看图片时不要编造细节。'
       + '失败时用 send_message 如实说明，不要自动重新生成；已生成但发送失败时只考虑重发已有缓存。'
+      + '生图和改图共用单次张数、个人每日、全局每日与累计次数限制；命中黑名单或额度不足时如实说明，不得拆分请求或改写关键词绕过。'
   }];
 }
 
@@ -100,6 +102,7 @@ async function prepare(mode, rawArgs, ctx, operation) {
   const settings = readSettings(config(), mode);
   operation.apiKey = settings.apiKey;
   const args = validateArgs(rawArgs, settings);
+  const user = requester(ctx, settings);
   if (!client) throw new Error('技能尚未 setup');
   const imageClient = client;
   let reference;
@@ -109,6 +112,7 @@ async function prepare(mode, rawArgs, ctx, operation) {
       : await providerReference(rawArgs.image, settings, imageClient, operation);
   }
   operation.check();
+  operation.beforeSubmit = () => consumeUsage(settings, user, args.count);
   const refs = await imageClient.request(settings, args, reference, operation);
   const images = [];
   const problems = [];

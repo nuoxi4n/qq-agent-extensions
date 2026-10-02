@@ -14,13 +14,16 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 const png2 = Buffer.concat([png, Buffer.from('second')]);
 const fixtureKey = 'fixture-only-not-a-real-api-key';
 const cacheFiles = new Set();
-let server, baseUrl, calls, handler;
+let server, baseUrl, calls, handler, usageDirectory;
+const previousDataDir = process.env.QQ_AGENT_DATA_DIR;
 const jsonImage = (res, images = [png]) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ data: images.map((image) => ({ b64_json: image.toString('base64') })) }));
 };
 
 before(async () => {
+  usageDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-image-usage-test-'));
+  process.env.QQ_AGENT_DATA_DIR = usageDirectory;
   server = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -33,6 +36,9 @@ before(async () => {
 });
 
 after(async () => {
+  if (previousDataDir === undefined) delete process.env.QQ_AGENT_DATA_DIR;
+  else process.env.QQ_AGENT_DATA_DIR = previousDataDir;
+  await fs.rm(usageDirectory, { recursive: true, force: true });
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
   const expected = path.join(os.tmpdir(), 'qq-agent-ai-image') + path.sep;
@@ -48,7 +54,7 @@ function fixture(overrides = {}, entries = []) {
     if (call.method === 'POST') jsonImage(res);
     else { res.writeHead(200, { 'Content-Type': 'image/png' }); res.end(call.url.endsWith('second') ? png2 : png); }
   };
-  const config = { baseUrl, apiKey: fixtureKey, ...overrides };
+  const config = { baseUrl, apiKey: fixtureKey, maxImagesPerRequest: 4, dailyUserLimit: 0, dailyTotalLimit: 0, totalLimit: 0, ...overrides };
   const tools = {};
   const warnings = [];
   const sent = [];
@@ -432,4 +438,89 @@ test('平台未确认图片发送时不声称成功，并交给主会话模型�
   assert.match(result.content, /请通过 send_message 如实说明/);
   assert.equal(f.ctx.session.sent.length, 1);
   assert.equal(calls.length, 1);
+});
+
+async function quotaFixture(t, overrides = {}, entries = []) {
+  const directory = await fs.mkdtemp(path.join(usageDirectory, 'case-'));
+  const previous = process.env.QQ_AGENT_DATA_DIR;
+  process.env.QQ_AGENT_DATA_DIR = directory;
+  t.after(() => { process.env.QQ_AGENT_DATA_DIR = previous; });
+  const f = fixture(overrides, entries);
+  f.ctx.session.triggerEntries = [{ senderId: '12345' }];
+  return { ...f, usagePath: path.join(directory, 'ai-image-usage.json') };
+}
+
+test('单次张数与黑名单在文生图、图生图、扩展能力入口统一拦截且不扣次数', async t => {
+  const f = await quotaFixture(t, { maxImagesPerRequest: 1, blockedKeywords: '禁词' });
+  for (const tool of Object.values(f.tools)) {
+    assert.match((await tool.execute(f.ctx, { prompt: '猫', count: 2 })).content, /count/);
+    assert.match((await tool.execute(f.ctx, { prompt: '禁\u200b 词' })).content, /黑名单/);
+  }
+  for (const provider of Object.values(providers)) {
+    assert.match((await provider({ prompt: '猫', count: 2 })).error, /count/);
+    assert.match((await provider({ prompt: '禁词' })).error, /黑名单/);
+  }
+  assert.equal(calls.length, 0);
+  await assert.rejects(fs.stat(f.usagePath), { code: 'ENOENT' });
+  f.config.blockedKeywords = '新禁词';
+  assert.match((await f.tools.gen.execute(f.ctx, { prompt: '新禁词' })).content, /黑名单/);
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '禁词' })).isError, undefined);
+  assert.equal(JSON.parse(await fs.readFile(f.usagePath, 'utf8')).total, 1);
+});
+
+test('文生图与图生图共用个人额度，并发只能提交一次且重载不重置', async t => {
+  const f = await quotaFixture(t, { dailyUserLimit: 1 }, [{ mid: 1, media: [{ kind: 'image', url: baseUrl + '/ref' }] }]);
+  const results = await Promise.all([
+    f.tools.gen.execute(f.ctx, { prompt: '猫' }),
+    f.tools.edit.execute(f.ctx, { prompt: '水彩猫' })
+  ]);
+  assert.equal(results.filter(result => !result.isError).length, 1);
+  assert.match(results.find(result => result.isError).content, /个人每日/);
+  assert.equal(calls.filter(call => call.method === 'POST').length, 1);
+  const reloaded = await import(pathToFileURL(path.resolve('skills/ai-image/index.js')).href + '?quota-reload');
+  const tools = {};
+  reloaded.setup({ config: () => f.config, fetch, registerTool: tool => { tools[tool.id] = tool; } });
+  try {
+    assert.match((await tools.gen.execute(f.ctx, { prompt: '猫' })).content, /个人每日/);
+    assert.equal(calls.filter(call => call.method === 'POST').length, 1);
+  } finally { reloaded.dispose(); }
+});
+
+test('生成失败仍扣次数，HTTP 429 重试也受剩余额度约束', async t => {
+  const f = await quotaFixture(t, { maxRetries: 3, totalLimit: 1 });
+  handler = (call, res) => { res.writeHead(429, { 'Retry-After': '0.001' }); res.end('{}'); };
+  const result = await f.tools.gen.execute(f.ctx, { prompt: '猫' });
+  assert.match(result.content, /累计/);
+  assert.equal(calls.length, 1);
+  assert.equal(JSON.parse(await fs.readFile(f.usagePath, 'utf8')).total, 1);
+  f.config.totalLimit = 2;
+  handler = (call, res) => { res.writeHead(500); res.end('{}'); };
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, true);
+  assert.match((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).content, /累计/);
+  assert.equal(calls.length, 2);
+});
+
+test('能力调用共用日额度并计入全局累计，传入伪造用户参数无效', async t => {
+  const f = await quotaFixture(t, { dailyUserLimit: 1, totalLimit: 2 });
+  assert.equal(remember(await providers['image.generate']({ prompt: '猫', userId: '12345' })).ok, true);
+  const denied = await providers['image.edit']({ prompt: '猫', userId: '67890', image: { buffer: png } });
+  assert.equal(denied.ok, false);
+  assert.match(denied.error, /扩展能力共享/);
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, undefined);
+  f.ctx.session.triggerEntries = [{ senderId: '67890' }];
+  assert.match((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).content, /累计/);
+  assert.equal(calls.length, 2);
+});
+
+test('身份不明、无效参考图和存储损坏时不会提交生成请求', async t => {
+  const f = await quotaFixture(t, { dailyUserLimit: 1 });
+  f.ctx.session.triggerEntries.push({ senderId: '67890' });
+  assert.match((await f.tools.gen.execute(f.ctx, { prompt: '猫', userId: '12345' })).content, /无法唯一确定/);
+  f.ctx.session.triggerEntries.pop();
+  assert.equal((await f.tools.edit.execute(f.ctx, { prompt: '猫' })).isError, true);
+  await assert.rejects(fs.stat(f.usagePath), { code: 'ENOENT' });
+  await fs.writeFile(f.usagePath, '{broken');
+  assert.match((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).content, /用量记录/);
+  assert.equal(await fs.readFile(f.usagePath, 'utf8'), '{broken');
+  assert.equal(calls.length, 0);
 });

@@ -33,6 +33,8 @@ test('生图技能的模块依赖限定在自身目录与 Node 内置模块', as
 test('在没有宿主 src 或配置的独立目录中，只使用公开 api/ctx 完成生图和改图', async () => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-image-boundary-'));
   let skill;
+  const previousDataDir = process.env.QQ_AGENT_DATA_DIR;
+  process.env.QQ_AGENT_DATA_DIR = path.join(temporary, 'data');
   try {
     const installed = path.join(temporary, 'isolated-skill');
     await fs.cp(source, installed, { recursive: true });
@@ -42,7 +44,7 @@ test('在没有宿主 src 或配置的独立目录中，只使用公开 api/ctx 
     const registered = {};
     const calls = [];
     skill.setup({
-      config: () => ({ baseUrl: 'https://fixture.invalid/v1', apiKey: 'test-placeholder' }),
+      config: () => ({ baseUrl: 'https://fixture.invalid/v1', apiKey: 'test-placeholder', dailyUserLimit: 0 }),
       registerTool: tool => { registered[tool.id] = tool; },
       fetch: async (url, options) => {
         calls.push(url);
@@ -75,6 +77,8 @@ test('在没有宿主 src 或配置的独立目录中，只使用公开 api/ctx 
     assert.equal(calls.length, 3, '仅一次生图、一次参考图下载、一次改图，不调用聊天模型');
   } finally {
     skill?.dispose();
+    if (previousDataDir === undefined) delete process.env.QQ_AGENT_DATA_DIR;
+    else process.env.QQ_AGENT_DATA_DIR = previousDataDir;
     const resolved = await fs.realpath(temporary);
     assert.equal(path.dirname(resolved).toLowerCase(), (await fs.realpath(os.tmpdir())).toLowerCase());
     assert.ok(path.basename(resolved).startsWith('ai-image-boundary-'));
