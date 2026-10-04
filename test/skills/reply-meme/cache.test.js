@@ -276,7 +276,8 @@ test('仅使用公开 api/ctx，仍要求下一轮模型决定发送且 hook 不
     const messages = [];
     hooks['before-llm-messages']({ ...ctx, messages });
     assert.equal(calls, 0);
-    const candidates = JSON.parse(messages[0].content.split('\n').at(-1));
+    assert.match(messages[0].content, /梗鲸本轮状态/);
+    const candidates = JSON.parse(messages.at(-1).content.split('\n').at(-1));
     const prepared = JSON.parse((await tools.find_meme.execute(ctx, { ids: [candidates[0].id] })).content);
     const args = { tickets: [prepared.prepared[0].ticket], mode: 'request' };
     assert.equal((await tools.send_meme.execute(ctx, args)).isError, true);

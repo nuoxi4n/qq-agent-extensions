@@ -81,7 +81,9 @@ test('本地和已有网络候选均不贴切时，无关键词检索才联网�
   });
   const messages = [{ role: 'user', content: '今天很开心' }];
   hooks['before-llm-messages']({ ...ctx, messages });
-  assert.equal(messages.length, 1);
+  assert.equal(messages.length, 2);
+  assert.match(messages.at(-1).content, /梗鲸本轮状态/);
+  assert.doesNotMatch(messages.at(-1).content, /候选数据/);
   assert.deepEqual((await run(tools.find_meme, ctx, {})).candidates, []);
   assert.equal(calls, 0);
   config.networkEnabled = true;

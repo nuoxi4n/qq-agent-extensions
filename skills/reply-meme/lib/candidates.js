@@ -56,26 +56,25 @@ export function buildCandidates(items, text = '', { seen = () => false, cached =
   // than the user's words. Do not always spend the spare slots on anger/laughter.
   const offset = parseInt(fingerprint(seed).slice(0, 8), 16) % SHELVES.length;
   const spareLimit = Math.min(limit, selected.length + Math.max(1, Math.min(4, Math.floor(limit / 3))));
+  pool.sort(novelty);
   for (let i = 0; i < SHELVES.length && selected.length < spareLimit; i++) {
     const shelf = SHELVES[(offset + i) % SHELVES.length];
     const inShelf = item => shelf.test(item.label);
     if (selected.some(inShelf)) continue;
-    add(pool.filter(x => inShelf(x) && !taken.has(x.original)).sort(novelty)[0]);
+    add(pool.find(x => inShelf(x) && !taken.has(x.original)));
   }
   related.forEach(add);
   // Empty browsing may explore meaningful titles. Topic-based shelves never
   // fill remaining slots with unrelated, unlabelled images.
-  if (!text.trim()) pool.sort(novelty).forEach(add);
+  if (!text.trim()) pool.forEach(add);
   return selected;
 }
 
 export function describe(item, recent = false, { compact = false } = {}) {
   const info = selectionInfo(item);
-  if (compact) return { id: candidateId(item), title: item.title.slice(0, 110),
-    ...(info.evidence === 'description' ? { description: info.description.slice(0, 140) } : {}),
-    ...(recent ? { recentlySent: true } : {}) };
-  return { id: candidateId(item), title: item.title.slice(0, 110),
-    ...(info.description ? { description: info.description.slice(0, 140) } : {}),
-    evidence: info.evidence, ...(info.requestOnly ? { requestOnly: true } : {}),
+  const data = { id: candidateId(item), title: item.title.slice(0, 110),
+    ...(info.description && (!compact || info.evidence === 'description') ? { description: info.description.slice(0, 140) } : {}) };
+  if (compact) return { ...data, ...(recent ? { recentlySent: true } : {}) };
+  return { ...data, evidence: info.evidence, ...(info.requestOnly ? { requestOnly: true } : {}),
     character: item.category, recentlySent: recent };
 }

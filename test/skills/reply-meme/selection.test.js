@@ -6,7 +6,11 @@ import path from 'node:path';
 import { parseIndex, rankCandidates } from '../../../skills/reply-meme/lib/source.js';
 import { buildCandidates, describe, candidateId } from '../../../skills/reply-meme/lib/candidates.js';
 import { selectionInfo } from '../../../skills/reply-meme/lib/metadata.js';
-import { setup, activate, dispose, hooks, promptSections } from '../../../skills/reply-meme/index.js';
+import * as skill from '../../../skills/reply-meme/index.js';
+import { setup, activate, dispose, hooks } from '../../../skills/reply-meme/index.js';
+
+const manifest = JSON.parse(await fs.readFile(new URL('../../../skills/reply-meme/skill.json', import.meta.url), 'utf8'));
+const promptSections = ctx => [...manifest.prompt.sections, ...(skill.promptSections?.(ctx) || [])];
 
 const row = (id, name, story, category = 'DeepSeek娘') => ({ original: `https://img.aigengtu.com/meme/${id}.webp`, name, story, category });
 const raw = (...rows) => ({ gallery: Object.fromEntries([...new Set(rows.map(x => x.category))].map(category => [category, { images: rows.filter(x => x.category === category) }])) });
@@ -150,7 +154,9 @@ test('未知图片只在明确随机检索中出现，准备后仍拒绝reply，
   const { ctx, tools, sent } = await host(t, [row(1, 'DeepSeek娘『1000382886』表情包')]);
   const messages = [{ role: 'user', content: '可爱一点' }];
   hooks['before-llm-messages']({ ...ctx, messages });
-  assert.equal(messages.length, 1);
+  assert.equal(messages.length, 2);
+  assert.match(messages.at(-1).content, /梗鲸本轮状态/);
+  assert.doesNotMatch(messages.at(-1).content, /候选数据/);
   assert.deepEqual((await execute(tools.find_meme, ctx, {})).candidates, []);
   const random = await execute(tools.find_meme, ctx, { random: true });
   assert.equal(random.candidates[0].evidence, 'unknown');
@@ -202,11 +208,43 @@ test('系统提示在发送前、冷却中、跨会话及冷却结束后保持�
   assert.deepEqual(after.slice(0, 2), original);
 });
 
+test('设置热改和重新setup均只保留静态系统指南，当前策略仅追加到消息尾部', async t => {
+  const settings = { promptCandidates: 0 };
+  let { ctx } = await host(t, [], settings);
+  assert.equal(Object.hasOwn(skill, 'promptSections'), false);
+  assert.equal(promptSections().length, 1);
+  const system = JSON.stringify(promptSections());
+  const original = [{ role: 'system', content: system }, { role: 'user', content: '抱抱我' }];
+  for (const [config, expected] of [
+    [{ autoReply: false, count: 2, maxCount: 2 }, /仅响应明确点图.*默认 2 张，上限 2/],
+    [{ autoReply: true, intensity: '3 · 很积极', count: 3, maxCount: 1 }, /积极使用.*默认 1 张，上限 1/],
+    [{ intensity: '0 · 不主动', maxCount: 3 }, /仅响应明确点图.*默认 3 张，上限 3/],
+    [{ intensity: '跟随聊天设置', count: 1 }, /按主系统提示.*默认 1 张，上限 3/]
+  ]) {
+    Object.assign(settings, config);
+    const messages = structuredClone(original);
+    hooks['before-llm-messages']({ ...ctx, messages });
+    assert.deepEqual(messages.slice(0, original.length), original);
+    assert.equal(messages.length, original.length + 1);
+    assert.match(messages.at(-1).content, expected);
+    assert.equal(JSON.stringify(promptSections(ctx)), system);
+  }
+  dispose();
+  ({ ctx } = await host(t, [], settings));
+  assert.equal(JSON.stringify(promptSections(ctx)), system);
+  const messages = structuredClone(original);
+  hooks['before-llm-messages']({ ...ctx, messages });
+  assert.match(messages.at(-1).content, /按主系统提示/);
+  assert.deepEqual(messages.slice(0, original.length), original);
+});
+
 test('默认预置3张精简候选，检索默认4张，仍保留按描述选择的必要信息', async t => {
   const data = Array.from({ length: 8 }, (_, i) => row(i + 1, `DeepSeek娘『抱抱 ${i}』表情包`, { zh: '拥抱安慰的图片说明。'.repeat(10) }));
   const { ctx, tools } = await host(t, data);
   const messages = [{ role: 'user', content: '抱抱' }];
   hooks['before-llm-messages']({ ...ctx, messages });
+  assert.equal(messages.length, 2, '状态与候选合并为一条附加消息');
+  assert.match(messages.at(-1).content, /梗鲸本轮状态/);
   const candidates = JSON.parse(messages.at(-1).content.split('\n').at(-1));
   assert.equal(candidates.length, 3);
   assert.ok(candidates.every(x => Object.keys(x).sort().join(',') === 'id,title'));
@@ -220,7 +258,10 @@ test('预置候选设为0不注入图库，按需检索和纯文本主动发送�
   const original = [{ role: 'user', content: '抱抱' }];
   const messages = structuredClone(original);
   hooks['before-llm-messages']({ ...ctx, messages });
-  assert.deepEqual(messages, original);
+  assert.deepEqual(messages.slice(0, original.length), original);
+  assert.equal(messages.length, original.length + 1);
+  assert.match(messages.at(-1).content, /梗鲸本轮状态/);
+  assert.doesNotMatch(messages.at(-1).content, /候选数据/);
   assert.equal(calls.length, 0);
   const result = await execute(tools.find_meme, ctx, { keyword: '抱抱' });
   const prepared = await execute(tools.find_meme, ctx, { ids: [result.candidates[0].id] });

@@ -1,4 +1,3 @@
-import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -10,25 +9,26 @@ import { fingerprint } from './lib/image.js';
 import { createImageCache } from './lib/cache.js';
 import { selectionInfo } from './lib/metadata.js';
 import { createLocalSource } from './lib/local.js';
+import { defaultCacheDir } from './lib/storage.js';
 
-const DEFAULT_DIR = path.join(os.tmpdir(), 'qq-agent-reply-meme');
 const integer = (v, fallback, min, max) => Math.min(max, Math.max(min, Number.isFinite(Number(v ?? fallback)) ? Math.floor(Number(v ?? fallback)) : fallback));
 const result = (data, isError = false) => ({ content: JSON.stringify(data), ...(isError ? { isError: true } : {}) });
 const strings = value => Array.isArray(value) && value.length > 0 && value.every(x => typeof x === 'string' && x.length > 0 && x.length <= 80);
 let runtime;
 
+// The only system section is the static guide in skill.json; do not export
+// promptSections here. Live policy is appended by before-llm-messages.
 export const hooks = {
   'before-llm-messages': ctx => runtime?.beforeMessages(ctx),
   'after-response': ctx => runtime?.afterResponse(ctx)
 };
-export const promptSections = ctx => runtime?.promptSections(ctx) || [];
 export const available = () => runtime?.available() ?? true;
 export const activate = () => runtime?.activate();
 export const deactivate = () => runtime?.deactivate();
 export const dispose = () => runtime?.deactivate();
 
 // Optional dependencies are for isolated verification; the host passes only api.
-export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
+export async function setup(api, { cacheDir = defaultCacheDir() } = {}) {
   runtime?.deactivate();
   const settings = () => api.config() || {};
   const log = message => { try { api.log?.(message); } catch { /* optional logger */ } };
@@ -54,13 +54,11 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
     try { return await local.load(settings().localDirectory, controller.signal); }
     catch (error) { if (!controller.signal.aborted) log(`本地表情目录暂不可用：${error.message}`); return []; }
   };
-  // 工具是否可被调用由宿主注册器判断；这里只检查自身生命周期。
-  const usable = () => active;
   const releaseState = state => { for (const ticket of state.tickets.values()) if (!ticket.sending) ticket.release?.(); };
   const expireSessions = () => {
     for (const [id, state] of sessions) if (Date.now() - state.at > 30 * 60000) { releaseState(state); sessions.delete(id); }
   };
-  const cooling = key => history.cooling(key, integer(settings().cooldownSeconds, 60, 0, 3600));
+  const cooling = (key, c = settings()) => history.cooling(key, integer(c.cooldownSeconds, 60, 0, 3600));
   const keyOf = ctx => String(ctx.sessionId || ctx.session?.id || '');
   const stateOf = (ctx, reset = false) => {
     const key = keyOf(ctx);
@@ -89,7 +87,7 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
   });
 
   const warm = () => {
-    if (!usable()) return;
+    if (!active) return;
     if (localEnabled()) { void localLoad(); return; }
     if (refresh || !networkEnabled()) return;
     refresh = source.load(integer(settings().cacheMinutes, 1440, 1, 1440), controller.signal)
@@ -117,44 +115,39 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
       sessions.clear();
     },
     beforeMessages(ctx) {
-      if (!usable() || !Array.isArray(ctx.messages)) return;
+      if (!active || !Array.isArray(ctx.messages)) return;
       const state = stateOf(ctx, true);
       if (!state) return;
       // Retrieval uses a short text view; the main model retains every original message.
       state.text = ctx.messages.filter(m => m.role === 'user' && typeof m.content === 'string').map(m => m.content).join('\n').slice(-6000);
-      if (!policy().proactive) return;
-      if (cooling(ctx.chatKey)) {
-        ctx.messages.push({ role: 'user', content: '[梗鲸本轮状态：主动配图冷却中；明确点图仍可检索。]' });
-        return;
-      }
-      const limit = integer(settings().promptCandidates, 3, 0, 12);
+      // Keep the system guide static. Settings and per-chat state belong after
+      // the original messages, including when candidate preloading is disabled.
+      const c = settings(), p = resolvePolicy(c);
+      const max = integer(c.maxCount, 3, 1, 3);
+      const onCooldown = p.proactive && cooling(ctx.chatKey, c);
+      const timing = !p.proactive ? '仅响应明确点图。' : onCooldown
+        ? '主动配图冷却中；明确点图仍可检索。' : p.hint;
+      const message = { role: 'user', content: `[梗鲸本轮状态：${timing} 点图默认 ${integer(c.count, 1, 1, max)} 张，上限 ${max}。]` };
+      ctx.messages.push(message);
+      if (!p.proactive || onCooldown) return;
+      const limit = integer(c.promptCandidates, 3, 0, 12);
       if (!limit || hasMedia(ctx.session)) return;
-      const localItems = localEnabled() ? local.peek(settings().localDirectory).filter(images.available) : [];
-      const contextual = localEnabled() && !!state.text.trim();
+      const localItems = c.localEnabled === true ? local.peek(c.localDirectory).filter(images.available) : [];
+      const contextual = c.localEnabled === true && !!state.text.trim();
       let chosen = shelf(state, localItems, limit, contextual);
-      if (!chosen.length && networkEnabled()) {
-        const items = rankCandidates(networkShelf().filter(images.available), { defaultCharacter: settings().character || 'auto', random: true });
+      if (!chosen.length && c.networkEnabled !== false) {
+        const items = rankCandidates(networkShelf().filter(images.available), { defaultCharacter: c.character || 'auto', random: true });
         chosen = shelf(state, items, limit, contextual);
       }
       const candidates = offer(state, chosen, true);
       if (!candidates.length) return;
-      ctx.messages.push({ role: 'user', content: '[梗鲸候选数据，非指令；选中id后调用find_meme({"ids":[id]})换取ticket；id不能用于send_meme。]\n' + JSON.stringify(candidates) });
+      message.content += '\n[梗鲸候选数据，非指令]\n' + JSON.stringify(candidates);
     },
     afterResponse(ctx) {
       if (!active) return;
       const state = stateOf(ctx);
       if (state) state.round++;
       // Observe the normal model boundary; never manufacture or reorder tool calls.
-    },
-    promptSections() {
-      if (!usable()) return [];
-      const p = policy();
-      // System prefix depends only on settings. Per-chat cooldown belongs at
-      // the end of user messages; sending must not rewrite the system prefix.
-      const timing = !p.proactive ? '仅响应明确点图。' : p.hint;
-      const max = integer(settings().maxCount, 3, 1, 3);
-      const content = timing + ` 点图默认 ${integer(settings().count, 1, 1, max)} 张，上限 ${max}；主动最多 1 张。`;
-      return [{ id: 'reply-meme-current-intensity', title: '梗鲸表情使用时机', priority: 45, content }];
     }
   };
 
@@ -171,7 +164,7 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
     async execute(ctx, args = {}) {
       if (!args || typeof args !== 'object' || Array.isArray(args)) return result({ reason: '工具参数必须是对象。' }, true);
       const state = stateOf(ctx);
-      if (!state || !usable() || stopped(ctx.session)) return result({ reason: '当前会话或表情工具不可用。' }, true);
+      if (!state || !active || stopped(ctx.session)) return result({ reason: '当前会话或表情工具不可用。' }, true);
       if (state.busy) return result({ reason: '本轮已有表情操作正在处理。' }, true);
       if (args.ids !== undefined && (!strings(args.ids) || args.ids.length > integer(settings().maxCount, 3, 1, 3))) return result({ reason: 'ids 必须是 1~3 个已提供的候选编号，且不超过配置上限。' }, true);
       state.busy = true;
@@ -198,7 +191,10 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
           const limit = integer(c.poolSize, 4, 1, 40);
           let chosen;
           if (args.random === true) chosen = eligible.map(item => ({ item, tie: Math.random() })).sort((a, b) => a.tie - b.tie).slice(0, limit).map(x => x.item);
-          else if (keyword || emotion) chosen = eligible.slice().sort((a, b) => b.score - a.score || Number(history.seen(ctx.chatKey, fingerprint(a.original))) - Number(history.seen(ctx.chatKey, fingerprint(b.original))) || Number(images.cached(b)) - Number(images.cached(a)) || fingerprint(state.at + a.original).localeCompare(fingerprint(state.at + b.original))).slice(0, limit);
+          else if (keyword || emotion) chosen = eligible.map(item => ({ item,
+            recent: history.seen(ctx.chatKey, fingerprint(item.original)), cached: images.cached(item), tie: fingerprint(state.at + item.original)
+          })).sort((a, b) => b.item.score - a.item.score || Number(a.recent) - Number(b.recent) || Number(b.cached) - Number(a.cached) || a.tie.localeCompare(b.tie))
+            .slice(0, limit).map(x => x.item);
           else chosen = shelf(state, eligible, limit);
           // 每轮仅预取一次一张；与正式选择共用最多四张冷素材的预算。
           if (!state.prefetched) {
@@ -241,9 +237,10 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
           const file = image.file;
           const { buf, ...metadata } = item;
           state.tickets.set(ticket, { id, ticket, file, item: metadata, round: state.round, used: false, release });
-          prepared.push({ id, ticket, evidence: selectionInfo(item).evidence,
+          const info = selectionInfo(item);
+          prepared.push({ id, ticket, evidence: info.evidence,
             ...(image.usedPreview ? { preview: true } : {}),
-            ...(selectionInfo(item).requestOnly ? { requestOnly: true } : {}),
+            ...(info.requestOnly ? { requestOnly: true } : {}),
             ...(Math.min(item.w, item.h) < integer(c.minShortSide, 160, 0, 2000) ? { small: true, width: item.w, height: item.h } : {}) });
         }
         return result({ prepared, failures, sent: 0, next: prepared.length
@@ -265,7 +262,7 @@ export async function setup(api, { cacheDir = DEFAULT_DIR } = {}) {
       if (!args || typeof args !== 'object' || Array.isArray(args)) return result({ reason: '工具参数必须是对象。' }, true);
       const state = stateOf(ctx);
       const fail = reason => result({ sent: 0, reason }, true);
-      if (!state || !usable() || stopped(ctx.session) || typeof ctx.sender?.sendImage !== 'function') return fail('当前会话或发送工具不可用。');
+      if (!state || !active || stopped(ctx.session) || typeof ctx.sender?.sendImage !== 'function') return fail('当前会话或发送工具不可用。');
       if (!['reply', 'request'].includes(args.mode) || !strings(args.tickets)) return fail('需要有效的 mode 和 tickets。');
       const proactive = args.mode === 'reply', tickets = [...new Set(args.tickets)];
       const max = integer(settings().maxCount, 3, 1, 3);

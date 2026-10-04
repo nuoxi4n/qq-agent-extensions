@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { defaultCacheDir } from '../../../skills/reply-meme/lib/storage.js';
 
 // Optional real-platform contract test. It reads platform modules, but loads only
 // a copied skill and uses isolated config/cache plus a fake OneBot transport.
@@ -31,8 +32,9 @@ test('真实QQ Agent加载器、工具开关、hook、发送队列与重载契�
   await fs.cp(new URL('../../../skills/reply-meme/', import.meta.url), path.join(roots.skills, 'reply-meme'), { recursive: true });
   await fs.writeFile(path.join(directory, 'package.json'), '{"type":"module"}');
   const raw = { gallery: { DeepSeek娘: { images: [{ name: 'DeepSeek娘『抱抱』表情包', original: 'https://img.aigengtu.com/meme/1.png' }] } } };
-  await fs.mkdir(path.join(directory, 'qq-agent-reply-meme'));
-  await fs.writeFile(path.join(directory, 'qq-agent-reply-meme/gallery-cache.json'), JSON.stringify({ at: Date.now(), raw }));
+  const cacheDir = defaultCacheDir();
+  await fs.mkdir(cacheDir, { recursive: true });
+  await fs.writeFile(path.join(cacheDir, 'gallery-cache.json'), JSON.stringify({ at: Date.now(), raw }));
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yaz0AAAAASUVORK5CYII=', 'base64');
   let fetches = 0;
   globalThis.fetch = async url => {
