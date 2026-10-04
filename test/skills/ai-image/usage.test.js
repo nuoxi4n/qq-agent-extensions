@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { consumeUsage, requester } from '../../../skills/ai-image/lib/usage.js';
+import { consumeUsage } from '../../../skills/ai-image/lib/usage.js';
 
 const limits = { dailyUserLimit: 2, dailyTotalLimit: 3, totalLimit: 4 };
 function fixture(t) {
@@ -80,16 +80,4 @@ test('独立进程并发抢占最后一个额度，重启后仍无法超额', as
   assert.ok(codes.every(code => code === 0 || code === 2));
   assert.equal(JSON.parse(fs.readFileSync(options.file, 'utf8')).total, 1);
   assert.throws(() => consumeUsage({ ...limits, totalLimit: 1 }, '67890', 1, options), /累计/);
-});
-
-test('用户身份只取本轮消息，跨群共用 QQ 号，能力调用不能伪造个人额度', () => {
-  const ctx = { chatKey: 'group:12345', selfId: '88888', session: { triggerEntries: [{ senderId: 12345 }, { senderId: '88888', self: true }] } };
-  assert.equal(requester(ctx, limits), '12345');
-  assert.equal(requester({ ...ctx, chatKey: 'group:67890' }, limits), '12345');
-  assert.throws(() => requester({ ...ctx, chatKey: 'private:67890' }, limits), /用户/);
-  assert.throws(() => requester({ ...ctx, proactive: true }, limits), /用户/);
-  assert.throws(() => requester({ session: { trigger: [{ senderId: '12345' }, { senderId: '67890' }] } }, limits), /用户/);
-  assert.throws(() => requester({ session: { trigger: 'message' } }, limits), /用户/);
-  assert.equal(requester(undefined, limits), 'provider');
-  assert.equal(requester({}, { dailyUserLimit: 0 }), 'unknown');
 });

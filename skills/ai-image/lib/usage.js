@@ -9,18 +9,6 @@ export function usageFile() {
   return path.resolve(directory, 'ai-image-usage.json');
 }
 
-export function requester(ctx, settings) {
-  // 能力接口没有可信的会话身份；所有扩展共用一个日额度，不能用调用参数伪造 QQ 号。
-  if (!ctx) return 'provider';
-  const raw = ctx.session?.triggerEntries ?? ctx.session?.trigger;
-  const entries = Array.isArray(raw) ? raw.filter(e => e && !e.self && !e.recalled && !e.isPoke && String(e.senderId) !== String(ctx.selfId)) : [];
-  const ids = [...new Set(entries.map(e => String(e.senderId)))];
-  if (ids.length === 1 && /^[1-9]\d{4,11}$/.test(ids[0]) && !ctx.proactive
-    && (!ctx.chatKey?.startsWith('private:') || ctx.chatKey === `private:${ids[0]}`)) return ids[0];
-  if (settings.dailyUserLimit) throw new Error('无法唯一确定本轮生图用户，请本人单独发送请求');
-  return 'unknown';
-}
-
 const integer = value => Number.isSafeInteger(value) && value >= 0;
 function restore(data) {
   if (!data || data.version !== 1 || !integer(data.total) || !integer(data.totalImages)

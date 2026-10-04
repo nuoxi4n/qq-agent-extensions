@@ -49,6 +49,7 @@ after(async () => {
 });
 
 function fixture(overrides = {}, entries = []) {
+  entries = entries.map((entry, index) => ({ id: index + 1, ...entry }));
   calls = [];
   handler = (call, res) => {
     if (call.method === 'POST') jsonImage(res);
@@ -61,7 +62,7 @@ function fixture(overrides = {}, entries = []) {
   setup({ config: () => config, fetch, registerTool: (tool) => { tools[tool.id] = tool; }, warn: (text) => warnings.push(text) });
   const ctx = {
     // 模拟主会话已成功执行 send_message；技能本身不得代替主模型发文字。
-    chatKey: 'group:123', session: { id: 'test-session', trigger: 'message', sent: [{ type: 'text', text: '我来试试，稍等～' }] },
+    chatKey: 'group:123', session: { id: 'test-session', trigger: [{ id: 100, mid: 100, senderId: '12345', media: [] }], sent: [{ type: 'text', text: '我来试试，稍等～' }] },
     store: {
       findByMid(key, mid) { assert.equal(key, 'group:123'); return entries.find((entry) => String(entry.mid) === String(mid)); },
       recent(key) { assert.equal(key, 'group:123'); return entries; }
@@ -130,14 +131,14 @@ test('图生图选择指定消息的第二张，发送真实 multipart 文件', 
   assert.deepEqual(Buffer.from(await form.get('image').arrayBuffer()), png2);
 });
 
-test('参考图优先使用触发消息，字符串 trigger 时回退最近带图消息', async () => {
+test('优先使用请求附图，没有附图时使用边界内唯一历史图片', async () => {
   const entries = [{ mid: 3, media: [{ kind: 'image', url: baseUrl + '/second' }] }];
   const f = fixture({}, entries);
-  f.ctx.session.trigger = [{ mid: 2, media: [{ kind: 'image', url: baseUrl + '/first' }] }];
+  f.ctx.session.trigger = [{ id: 2, mid: 2, senderId: '12345', media: [{ kind: 'image', url: baseUrl + '/first' }] }];
   assert.equal((await f.tools.edit.execute(f.ctx, { prompt: '改图' })).isError, undefined);
   assert.equal(calls[0].url, '/v1/first');
   calls = [];
-  f.ctx.session.trigger = 'message';
+  f.ctx.session.trigger = [{ id: 4, mid: 4, senderId: '12345', media: [] }];
   assert.equal((await f.tools.edit.execute(f.ctx, { prompt: '改图' })).isError, undefined);
   assert.equal(calls[0].url, '/v1/second');
 });
@@ -172,7 +173,7 @@ test('自动选图不使用本轮触发批之后的新消息，等待期开始�
     { id: 12, mid: 102, ts: 1200, media: [{ kind: 'image', url: baseUrl + '/second' }] }
   ]);
   f.ctx.session.startedAt = 500;
-  f.ctx.session.trigger = [{ id: 11, mid: 101, ts: 1200, text: '修改上面的图片', media: [] }];
+  f.ctx.session.trigger = [{ id: 11, mid: 101, senderId: '12345', ts: 1200, text: '修改上面的图片', media: [] }];
   assert.equal((await f.tools.edit.execute(f.ctx, { prompt: '水彩风格' })).isError, undefined);
   assert.equal(calls[0].url, '/v1/first');
 });
@@ -446,12 +447,11 @@ async function quotaFixture(t, overrides = {}, entries = []) {
   process.env.QQ_AGENT_DATA_DIR = directory;
   t.after(() => { process.env.QQ_AGENT_DATA_DIR = previous; });
   const f = fixture(overrides, entries);
-  f.ctx.session.triggerEntries = [{ senderId: '12345' }];
   return { ...f, usagePath: path.join(directory, 'ai-image-usage.json') };
 }
 
 test('单次张数与黑名单在文生图、图生图、扩展能力入口统一拦截且不扣次数', async t => {
-  const f = await quotaFixture(t, { maxImagesPerRequest: 1, blockedKeywords: '禁词' });
+  const f = await quotaFixture(t, { maxImagesPerRequest: 1, blockedTerms: '禁词' });
   for (const tool of Object.values(f.tools)) {
     assert.match((await tool.execute(f.ctx, { prompt: '猫', count: 2 })).content, /count/);
     assert.match((await tool.execute(f.ctx, { prompt: '禁\u200b 词' })).content, /黑名单/);
@@ -462,7 +462,7 @@ test('单次张数与黑名单在文生图、图生图、扩展能力入口统�
   }
   assert.equal(calls.length, 0);
   await assert.rejects(fs.stat(f.usagePath), { code: 'ENOENT' });
-  f.config.blockedKeywords = '新禁词';
+  f.config.blockedTerms = '新禁词';
   assert.match((await f.tools.gen.execute(f.ctx, { prompt: '新禁词' })).content, /黑名单/);
   assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '禁词' })).isError, undefined);
   assert.equal(JSON.parse(await fs.readFile(f.usagePath, 'utf8')).total, 1);
@@ -507,20 +507,122 @@ test('能力调用共用日额度并计入全局累计，传入伪造用户参�
   assert.equal(denied.ok, false);
   assert.match(denied.error, /扩展能力共享/);
   assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, undefined);
-  f.ctx.session.triggerEntries = [{ senderId: '67890' }];
+  f.ctx.session.trigger = [{ id: 101, mid: 101, senderId: '67890' }];
   assert.match((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).content, /累计/);
   assert.equal(calls.length, 2);
 });
 
 test('身份不明、无效参考图和存储损坏时不会提交生成请求', async t => {
   const f = await quotaFixture(t, { dailyUserLimit: 1 });
-  f.ctx.session.triggerEntries.push({ senderId: '67890' });
+  f.ctx.session.trigger.push({ senderId: '67890' });
   assert.match((await f.tools.gen.execute(f.ctx, { prompt: '猫', userId: '12345' })).content, /无法唯一确定/);
-  f.ctx.session.triggerEntries.pop();
+  f.ctx.session.trigger.pop();
   assert.equal((await f.tools.edit.execute(f.ctx, { prompt: '猫' })).isError, true);
   await assert.rejects(fs.stat(f.usagePath), { code: 'ENOENT' });
   await fs.writeFile(f.usagePath, '{broken');
   assert.match((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).content, /用量记录/);
   assert.equal(await fs.readFile(f.usagePath, 'utf8'), '{broken');
   assert.equal(calls.length, 0);
+});
+
+test('多人触发按请求消息扣个人额度，改图的参考图发送者不影响归属', async t => {
+  const f = await quotaFixture(t, { dailyUserLimit: 2 }, [
+    { mid: 10, senderId: '67890', media: [{ kind: 'image', url: baseUrl + '/ref' }] }
+  ]);
+  f.ctx.session.trigger = [
+    { id: 11, mid: 11, senderId: '12345', text: '把 #10 改成水彩风' },
+    { id: 12, mid: 12, senderId: '67890', text: '我也喜欢猫' }
+  ];
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫', requestMessageId: 11 })).isError, undefined);
+  assert.equal((await f.tools.edit.execute(f.ctx, { prompt: '水彩猫', requestMessageId: '#11', messageId: 10 })).isError, undefined);
+  assert.match((await f.tools.gen.execute(f.ctx, { prompt: '猫', requestMessageId: 11, userId: '67890' })).content, /个人每日/);
+  assert.deepEqual(JSON.parse(await fs.readFile(f.usagePath, 'utf8')).users, { '12345': 2 });
+  const posts = calls.filter(call => call.method === 'POST');
+  assert.equal(posts.length, 2);
+  assert.equal(JSON.parse(posts[0].body).requestMessageId, undefined);
+  assert.ok(!posts[1].body.toString().includes('name="requestMessageId"'));
+  assert.equal(f.sent.length, 2);
+});
+
+test('混合群聊不能借唯一 @ 旁人的额度生成，关闭个人限额也必须指定请求', async t => {
+  const f = await quotaFixture(t, { dailyUserLimit: 1 });
+  f.ctx.session.trigger = [{ id: 10, mid: 10, senderId: '67890', text: '画猫' }];
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).isError, undefined);
+  f.ctx.session.trigger = [
+    { id: 11, mid: 11, senderId: '12345', text: '@机器人 天气怎样', atMe: true },
+    { id: 12, mid: 12, senderId: '67890', text: '再画一只猫' }
+  ];
+  assert.match((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).content, /requestMessageId/);
+  assert.match((await f.tools.gen.execute(f.ctx, { prompt: '猫', requestMessageId: 12 })).content, /个人每日/);
+  assert.deepEqual(JSON.parse(await fs.readFile(f.usagePath, 'utf8')).users, { '67890': 1 });
+  assert.equal(calls.length, 1);
+  f.config.dailyUserLimit = 0;
+  assert.match((await f.tools.gen.execute(f.ctx, { prompt: '猫' })).content, /requestMessageId/);
+  assert.equal((await f.tools.gen.execute(f.ctx, { prompt: '猫', requestMessageId: 12 })).isError, undefined);
+  assert.equal(calls.length, 2);
+});
+
+test('改图以已选请求为边界，不读取同批后来发出的旁人图片或本人的下一张图', async t => {
+  const f = await quotaFixture(t, { dailyUserLimit: 2 });
+  const cat = { id: 10, mid: 10, senderId: '12345', media: [{ kind: 'image', url: baseUrl + '/first' }] };
+  const request = { id: 11, mid: 11, senderId: '12345', text: '把这只猫改成水彩风' };
+  const later = { id: 12, mid: 12, senderId: '67890', media: [{ kind: 'image', url: baseUrl + '/second' }] };
+  f.ctx.session.trigger = [cat, request, later];
+  f.ctx.store.recent = () => { throw new Error('本轮已找到参考图，不应读取历史'); };
+  for (const senderId of ['67890', '12345']) {
+    later.senderId = senderId;
+    const result = await f.tools.edit.execute(f.ctx, { prompt: '水彩猫', requestMessageId: 11 });
+    assert.equal(result.isError, undefined);
+    assert.match(result.content, /消息 #10/);
+  }
+  assert.deepEqual(calls.filter(call => call.method === 'GET').map(call => call.url), ['/v1/first', '/v1/first']);
+  assert.deepEqual(JSON.parse(await fs.readFile(f.usagePath, 'utf8')).users, { '12345': 2 });
+});
+
+test('自动选图有歧义时不下载或扣额，明确参考图后才执行', async t => {
+  const images = [
+    { id: 8, mid: 80, senderId: '12345', media: [{ kind: 'image', url: baseUrl + '/first' }] },
+    { id: 9, mid: 90, senderId: '67890', media: [{ kind: 'image', url: baseUrl + '/second' }] }
+  ];
+  const f = await quotaFixture(t, { dailyUserLimit: 1 }, images);
+  const request = { id: 10, mid: 100, senderId: '12345', text: '改成水彩风' };
+  for (const trigger of [[...images, request], [request]]) {
+    f.ctx.session.trigger = trigger;
+    assert.match((await f.tools.edit.execute(f.ctx, { prompt: '水彩风', requestMessageId: 100 })).content, /参考图不唯一/);
+  }
+  assert.equal(calls.length, 0);
+  await assert.rejects(fs.stat(f.usagePath), { code: 'ENOENT' });
+  const result = await f.tools.edit.execute(f.ctx, { prompt: '水彩风', requestMessageId: 100, messageId: 90 });
+  assert.equal(result.isError, undefined);
+  assert.equal(calls[0].url, '/v1/second');
+  assert.deepEqual(JSON.parse(await fs.readFile(f.usagePath, 'utf8')).users, { '12345': 1 });
+});
+
+test('请求之前没有图片时不选后来的图，也不以时间戳兼容缺少序号的记录', async t => {
+  const f = await quotaFixture(t, { dailyUserLimit: 1 }, [
+    { id: undefined, mid: 1, ts: 1, media: [{ kind: 'image', url: baseUrl + '/first' }] },
+    { id: 12, mid: 12, media: [{ kind: 'image', url: baseUrl + '/second' }] }
+  ]);
+  f.ctx.session.trigger = [{ id: 11, mid: 11, senderId: '12345', ts: Date.now(), media: [] }];
+  assert.match((await f.tools.edit.execute(f.ctx, { prompt: '水彩猫' })).content, /没有可用图片/);
+  assert.equal(calls.length, 0);
+  await assert.rejects(fs.stat(f.usagePath), { code: 'ENOENT' });
+});
+
+test('无效请求消息在下载参考图和扣额前拒绝，不使用参考图或 userId 推断身份', async t => {
+  const f = await quotaFixture(t, { dailyUserLimit: 1 }, [
+    { mid: 10, senderId: '12345', media: [{ kind: 'image', url: baseUrl + '/ref' }] }
+  ]);
+  f.ctx.session.trigger = [{ id: 11, mid: 11, senderId: '12345' }, { id: 12, mid: 12, senderId: '67890' }];
+  for (const tool of Object.values(f.tools)) {
+    for (const requestMessageId of [10, 999, '12345']) {
+      const result = await tool.execute(f.ctx, { prompt: '猫', requestMessageId, messageId: 10, userId: '12345' });
+      assert.equal(result.isError, true);
+      assert.match(result.content, /requestMessageId/);
+    }
+    assert.match((await tool.execute(f.ctx, { prompt: '猫', messageId: 10 })).content, /无法唯一确定/);
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(f.sent.length, 0);
+  await assert.rejects(fs.stat(f.usagePath), { code: 'ENOENT' });
 });

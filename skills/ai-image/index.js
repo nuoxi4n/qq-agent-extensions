@@ -1,8 +1,10 @@
 // AI生图 | nuoxi4n
-import { readSettings, validateArgs, describeError } from './lib/config.js';
-import { createImageClient } from './lib/images.js';
-import { loadReference, providerReference } from './lib/reference.js';
-import { consumeUsage, requester } from './lib/usage.js';
+// 宿主热更新只刷新入口 URL；整条本地导入链随发布版本更新，避免沿用旧扣额逻辑。
+import { readSettings, validateArgs, describeError } from './lib/config.js?v=1.0.5';
+import { createImageClient } from './lib/images.js?v=1.0.5';
+import { loadReference, providerReference } from './lib/reference.js?v=1.0.5';
+import { consumeUsage } from './lib/usage.js?v=1.0.5';
+import { resolveRequest } from './lib/context.js?v=1.0.5';
 
 let config = () => ({});
 let client;
@@ -51,7 +53,8 @@ export function setup(api) {
   const common = {
     prompt: { type: 'string', minLength: 1, maxLength: 2000, description: '画面描述或改图要求。改图时写清保留什么、修改什么' },
     size: { type: 'string', description: '可选尺寸，如 1024x1024、1536x1024 或 auto；省略时使用设置值' },
-    count: { type: 'integer', minimum: 1, maximum: 4, description: '生成数量，默认 1，最多 4；管理员单次上限或模型可能有更低的限制' }
+    count: { type: 'integer', minimum: 1, maximum: 4, description: '生成数量，默认 1，最多 4；管理员单次上限或模型可能有更低的限制' },
+    requestMessageId: { type: ['string', 'integer'], description: '提出本次生图或改图要求的本轮 QQ 消息 id（聊天记录中的 #数字）。多人发言时必须填写，用于确定请求者、个人额度及自动选图边界；不要填用户 QQ 号或旁人的消息' }
   };
   api.registerTool({
     id: 'gen', name: '文生图', category: 'media', icon: '🎨',
@@ -89,6 +92,9 @@ export function promptSections() {
   return [{
     id: 'ai-image-routing', title: 'AI生图', priority: 35,
     content: '用户要求纯文字创作时用 ai-image__gen；要求基于已发图片修改时用 ai-image__edit。'
+      + '本轮有多人发言时，使用 requestMessageId 指定实际提出本次生图或改图要求的消息；按真实请求选择，不得选择旁人消息转移额度。'
+      + 'requestMessageId 用于确定请求者；edit 的 messageId 只选择参考图，两者可以不同。'
+      + '不根据 @ 推断请求者；自动参考图只选请求消息及其之前的图片，有多个候选时必须填写 messageId。'
       + '用户指定某张图时传真实 messageId 和从 1 开始的 imageIndex；图片指代不清时先确认，不要猜测。'
       + '执行顺序：先调用 send_message 按当前人设自然告知正在处理，确认文字发送成功后调用生图或改图工具；等工具返回，再调用 send_message 自然说明结果。'
       + '图片由工具直接发送，完成文字仍需你发送；不要因已发图就选择不发送或直接 finish，不要重复发图，未查看图片时不要编造细节。'
@@ -102,17 +108,17 @@ async function prepare(mode, rawArgs, ctx, operation) {
   const settings = readSettings(config(), mode);
   operation.apiKey = settings.apiKey;
   const args = validateArgs(rawArgs, settings);
-  const user = requester(ctx, settings);
+  const request = ctx ? resolveRequest(ctx, rawArgs.requestMessageId) : null;
   if (!client) throw new Error('技能尚未 setup');
   const imageClient = client;
   let reference;
   if (mode === 'edit') {
     reference = ctx
-      ? await loadReference(ctx, rawArgs, settings, imageClient, operation)
+      ? await loadReference(ctx, rawArgs, request, settings, imageClient, operation)
       : await providerReference(rawArgs.image, settings, imageClient, operation);
   }
   operation.check();
-  operation.beforeSubmit = () => consumeUsage(settings, user, args.count);
+  operation.beforeSubmit = () => consumeUsage(settings, request?.userId ?? 'provider', args.count);
   const refs = await imageClient.request(settings, args, reference, operation);
   const images = [];
   const problems = [];

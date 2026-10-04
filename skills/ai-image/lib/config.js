@@ -35,12 +35,13 @@ export function readSettings(raw = {}, mode = 'generate') {
   extraBody = Object.fromEntries(Object.entries(extraBody).filter(([key]) => !RESERVED.has(key)));
   const responseFormat = raw.responseFormat || 'auto';
   if (!['auto', 'url', 'b64_json'].includes(responseFormat)) throw new Error('返回格式只能是 auto、url 或 b64_json');
+  const blockedTerms = raw.blacklistEnabled === false ? '' : String(raw.blockedTerms ?? '');
   return {
     maxImagesPerRequest: limitSetting(raw.maxImagesPerRequest, 2, 1, 4, '单次图片上限'),
     dailyUserLimit: limitSetting(raw.dailyUserLimit, 10, 0, 1000000, '每人每日次数'),
     dailyTotalLimit: limitSetting(raw.dailyTotalLimit, 100, 0, 1000000, '全局每日次数'),
     totalLimit: limitSetting(raw.totalLimit, 1000, 0, Number.MAX_SAFE_INTEGER, '累计次数上限'),
-    blockedKeywords: String(raw.blockedKeywords ?? '').split(/[\n,，;；]+/).map(normalizeKeyword).filter(Boolean),
+    blockedTerms: blockedTerms.split(/[\n,，;；]+/).map(normalizeKeyword).filter(Boolean),
     endpoint: resolveEndpoint(baseUrl, mode), apiKey, model, extraBody, responseFormat,
     defaultSize: String(raw.defaultSize || '').trim(),
     timeoutMs: numberSetting(raw.timeoutMs, 180000, 5000, 600000),
@@ -73,7 +74,7 @@ export function validateArgs(args = {}, settings) {
   const prompt = args.prompt.trim();
   if (prompt.length > 2000) throw new Error('prompt 最多 2000 字');
   const count = positiveInteger(args.count, 1, 'count', settings.maxImagesPerRequest);
-  if (settings.blockedKeywords.some(keyword => normalizeKeyword(prompt).includes(keyword))) {
+  if (settings.blockedTerms.some(keyword => normalizeKeyword(prompt).includes(keyword))) {
     throw new Error('图片描述命中生图关键词黑名单，请修改请求；不要尝试绕过限制');
   }
   const size = String(args.size ?? '').trim() || settings.defaultSize;

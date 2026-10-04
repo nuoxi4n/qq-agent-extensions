@@ -1,23 +1,25 @@
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { checkImage, decodeBase64 } from './images.js';
-import { positiveInteger } from './config.js';
+import { checkImage, decodeBase64 } from './images.js?v=1.0.5';
+import { positiveInteger } from './config.js?v=1.0.5';
+import { messageId } from './context.js?v=1.0.5';
 
 function imageMedias(entry) {
   if (entry?.recalled || !Array.isArray(entry?.media)) return [];
   return entry.media.filter((media) => media?.kind === 'image' && (media.url || media.file));
 }
 
-function recentWithinRun(entries, trigger, session) {
-  const positive = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0;
-  const lastId = Math.max(0, ...trigger.map((entry) => positive(entry?.id)));
-  const lastTs = Math.max(0, ...trigger.map((entry) => positive(entry?.ts))) || positive(session?.startedAt);
-  return entries.filter((entry) => {
-    const id = positive(entry?.id);
-    if (lastId && id) return id <= lastId;
-    const ts = positive(entry?.ts);
-    return !lastTs || !ts || ts <= lastTs;
-  });
+async function automaticReference(ctx, request) {
+  if (imageMedias(request.message).length) return request.message;
+  const beforeRequest = entry => Number.isSafeInteger(entry?.id) && entry.id > 0
+    && entry.id <= request.message.id && imageMedias(entry).length;
+  let candidates = request.trigger.filter(beforeRequest);
+  if (!candidates.length) {
+    candidates = (await ctx.store.recent(ctx.chatKey, { limit: 30 })).filter(beforeRequest);
+  }
+  if (candidates.length > 1) throw new Error('参考图不唯一，请用 messageId 指定要修改的带图消息');
+  if (!candidates.length) throw new Error('请求消息及其之前的最近记录里没有可用图片，请先发送参考图或指定 messageId');
+  return candidates[0];
 }
 
 async function readLocalReference(source, settings, operation) {
@@ -41,27 +43,20 @@ async function readLocalReference(source, settings, operation) {
   } finally { await handle.close(); }
 }
 
-export async function loadReference(ctx, args, settings, client, operation) {
+export async function loadReference(ctx, args, request, settings, client, operation) {
   operation?.check();
   const imageIndex = positiveInteger(args.imageIndex, 1, 'imageIndex', 100);
-  const explicit = args.messageId != null && String(args.messageId).trim() !== '';
-  let candidates;
-  if (explicit) {
-    const mid = String(args.messageId).trim().replace(/^#/, '');
-    if (!/^-?\d+$/.test(mid)) throw new Error('messageId 必须是聊天记录里的 QQ 消息 id（#数字）');
-    const entry = await ctx.store?.findByMid?.(ctx.chatKey, mid);
+  let entry;
+  if (args.messageId != null) {
+    const mid = messageId(args.messageId, 'messageId');
+    entry = await ctx.store.findByMid(ctx.chatKey, mid);
     if (!entry) throw new Error(`当前会话找不到消息 #${mid}，请使用真实的带图消息 id`);
-    candidates = [entry];
   } else {
-    // 兼容 trigger 为消息数组的版本，也兼容文档中 trigger 为字符串的版本。
-    const trigger = Array.isArray(ctx.session?.trigger) ? ctx.session.trigger : [];
-    candidates = trigger.some((entry) => imageMedias(entry).length)
-      ? trigger : recentWithinRun(await ctx.store?.recent?.(ctx.chatKey, { limit: 30 }) || [], trigger, ctx.session);
+    entry = await automaticReference(ctx, request);
   }
   operation?.check();
-  const entry = [...candidates].reverse().find((item) => imageMedias(item).length);
-  if (!entry) throw new Error(explicit ? '指定消息里没有可用图片，请确认消息 id' : '最近 30 条消息里没有图片，请先发送参考图');
   const images = imageMedias(entry);
+  if (!images.length) throw new Error('指定消息里没有可用图片，请确认消息 id');
   if (imageIndex > images.length) throw new Error(`这条消息只有 ${images.length} 张图片，不能选择第 ${imageIndex} 张`);
   const media = images[imageIndex - 1];
   let buffer;

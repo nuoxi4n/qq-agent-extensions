@@ -3,7 +3,7 @@ name: ai-image
 description: 在 QQ-agent 中通过兼容 images API 的服务执行文生图或图生图；用户要求画图、按参考图修改或转换风格时使用。
 metadata:
   author: nuoxi4n
-  version: 1.0.2
+  version: 1.0.5
 ---
 
 # AI生图
@@ -18,14 +18,17 @@ metadata:
 需要单独的编辑模型时填写 `editModel`，否则复用 `model`。
 不要在聊天参数或提示词里传递 API Key。
 
-管理员可配置单次张数 `maxImagesPerRequest`（默认 2）、每人每日次数 `dailyUserLimit`（默认 10）、全局每日次数 `dailyTotalLimit`（默认 100）、累计次数 `totalLimit`（默认 1000）和关键词黑名单 `blockedKeywords`（默认空）。次数限制设为 0 表示不限，日额度北京时间零点重置。累计统计持久化，文生图和图生图共用；每次提交接口含失败和重试均计次。
+管理员可配置单次张数 `maxImagesPerRequest`（默认 2）、每人每日次数 `dailyUserLimit`（默认 10）、全局每日次数 `dailyTotalLimit`（默认 100）、累计次数 `totalLimit`（默认 1000）和关键词黑名单 `blockedTerms`（默认空）。次数限制设为 0 表示不限，日额度北京时间零点重置。累计统计持久化，文生图和图生图共用；每次提交接口含失败和重试均计次。
+黑名单开关 `blacklistEnabled` 默认开启，`blockedTerms` 留空表示没有禁词。关闭开关可暂停检查并保留词表。
 遇到额度不足、身份不明或黑名单拦截，应如实告知用户，不得拆单、切换工具或改写关键词绕过。个人身份由本轮真实发言者决定，不能在工具参数中指定别人的 QQ 号。黑名单只匹配提示词，不检查图片内容。
 
 ## 选择工具
 
-- 纯文字创作：`ai-image__gen`，必填 `prompt`，可选 `size`、`count`（1~4）。
-- 基于已有图片修改：`ai-image__edit`，必填 `prompt`，可选 `messageId`、`imageIndex`、`size`、`count`。
-- 图生图的 `messageId` 只能引用当前会话真实存在的带图消息。`imageIndex` 从 1 开始；省略消息 id 时自动查找触发消息或最近 30 条记录中的图片，并排除本轮触发批之后的新消息。
+- 纯文字创作：`ai-image__gen`，必填 `prompt`，可选 `requestMessageId`、`size`、`count`（1~4）。
+- 基于已有图片修改：`ai-image__edit`，必填 `prompt`，可选 `requestMessageId`、`messageId`、`imageIndex`、`size`、`count`。
+- 本轮多人发言时，必须用 `requestMessageId` 指定实际提出本次生图或改图要求的 QQ 消息 id；它确定额度归属和选图边界，不能填 QQ 号或旁人消息。仅一名发言者时可省略，使用其最后一条有效消息作为边界。不能根据谁 @ 机器人推断请求者；请求不明确时先确认。
+- `requestMessageId` 与改图的 `messageId` 含义不同：前者选请求消息，后者选参考图片；修改别人发的图时仍按请求者扣额。
+- 图生图的 `messageId` 只能引用当前会话真实存在的带图消息。`imageIndex` 从 1 开始；省略 `messageId` 时优先使用请求附图，否则选择本轮请求之前唯一的带图消息。本轮无候选时才查询最近 30 条记录，仍排除请求之后的图片。出现多个候选时应明确填写 `messageId`。
 - 用户明确指定旧图时传消息 id；多张图的指代不清时先确认，不要猜图。
 - 参考图支持 PNG、JPEG、WebP。GIF 不能作为参考图。
 

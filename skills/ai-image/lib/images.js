@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { buildBody, describeError } from './config.js';
+import { buildBody, describeError } from './config.js?v=1.0.5';
 
 async function sleep(ms, operation) {
   operation?.check();

@@ -1,7 +1,7 @@
 {
   "id": "ai-image",
   "name": "AI生图",
-  "version": "1.0.2",
+  "version": "1.0.5",
   "apiVersion": 1,
   "category": "media",
   "description": "支持文生图与图生图：共用 Base URL 和 API Key，按文字生成图片或参考会话图片修改，并发送到当前群聊或私聊。",
@@ -33,7 +33,8 @@
     "dailyUserLimit": 10,
     "dailyTotalLimit": 100,
     "totalLimit": 1000,
-    "blockedKeywords": ""
+    "blacklistEnabled": true,
+    "blockedTerms": ""
   },
   "configSchema": {
     "baseUrl": {
@@ -128,10 +129,15 @@
       "label": "累计生图次数上限",
       "description": "默认 1000；0 表示不限。跨重启累计，每次提交接口计一次，失败与 HTTP 429 重试也计次。"
     },
-    "blockedKeywords": {
+    "blacklistEnabled": {
+      "type": "boolean",
+      "label": "启用生图黑名单",
+      "description": "默认开启。关闭后不检查黑名单，已保存的词表保留；重新开启后恢复检查。"
+    },
+    "blockedTerms": {
       "type": "string",
       "label": "生图关键词黑名单",
-      "description": "每行一个词，也可用中英文逗号或分号分隔。忽略大小写、全半角、空白与零宽格式字符，按子串匹配；留空关闭。",
+      "description": "用中英文逗号、分号分隔，忽略大小写、全半角、空白与零宽字符。留空表示没有禁词。关闭「启用生图黑名单」可暂停检查并保留词表。",
       "multiline": true
     }
   },

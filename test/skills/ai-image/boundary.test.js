@@ -9,6 +9,7 @@ const source = fileURLToPath(new URL('../../../skills/ai-image/', import.meta.ur
 
 test('生图技能的模块依赖限定在自身目录与 Node 内置模块', async () => {
   const root = await fs.realpath(source);
+  const manifest = JSON.parse(await fs.readFile(path.join(root, 'skill.json'), 'utf8'));
   async function check(directory) {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name);
@@ -21,7 +22,9 @@ test('生图技能的模块依赖限定在自身目录与 Node 内置模块', as
         const specifier = match[1];
         if (specifier.startsWith('node:')) continue;
         assert.ok(specifier.startsWith('.'), `不支持的依赖：${specifier}`);
-        const resolved = await fs.realpath(path.resolve(path.dirname(file), specifier));
+        const url = new URL(specifier, pathToFileURL(file));
+        assert.equal(url.search, `?v=${manifest.version}`, `本地依赖必须随发布版本刷新：${specifier}`);
+        const resolved = await fs.realpath(fileURLToPath(url));
         const relative = path.relative(root, resolved);
         assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative), `依赖越过技能目录：${specifier}`);
       }
@@ -56,8 +59,8 @@ test('在没有宿主 src 或配置的独立目录中，只使用公开 api/ctx 
     });
     const images = [];
     const ctx = {
-      chatKey: 'group:123', session: { status: 'running', sent: [{ type: 'text', text: '我来画～' }] },
-      store: { recent: () => [{ mid: 1, media: [{ kind: 'image', url: 'https://fixture.invalid/reference' }] }] },
+      chatKey: 'group:123', session: { status: 'running', trigger: [{ id: 2, mid: 2, senderId: '12345' }], sent: [{ type: 'text', text: '我来画～' }] },
+      store: { recent: () => [{ id: 1, mid: 1, media: [{ kind: 'image', url: 'https://fixture.invalid/reference' }] }] },
       sender: { sendImage: async (key, image) => {
         images.push(image);
         if (image.file) {

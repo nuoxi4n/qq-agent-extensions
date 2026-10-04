@@ -34,7 +34,8 @@ test('工具契约合法，配置缺失同步显示原因，热更新无需 setu
     assert.match(`${manifest.id}__${tool.id}`, /^[A-Za-z0-9_-]{1,64}$/);
     assert.ok(tool.description.includes('当用户'));
     assert.equal(tool.parameters.type, 'object');
-    assert.ok(Object.keys(tool.parameters.properties).length <= 5);
+    assert.ok(Object.keys(tool.parameters.properties).length <= 6);
+    assert.ok(tool.parameters.properties.requestMessageId.description.includes('本轮'));
     assert.deepEqual(tool.parameters.required, ['prompt']);
   }
   assert.equal(available().ok, false);
